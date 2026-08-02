@@ -50,8 +50,16 @@ function createWindow() {
 }
 
 function createTray() {
-  // Create a simple 16x16 tray icon programmatically
-  const icon = nativeImage.createEmpty();
+  // Use bundled icon or create a visible fallback
+  let icon: Electron.NativeImage;
+  const iconPath = path.join(__dirname, isDev ? '../resources/assets/icon.png' : '../resources/assets/icon.png');
+  try {
+    icon = nativeImage.createFromPath(iconPath);
+  } catch {
+    icon = nativeImage.createFromDataURL(
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAAbwAAAG8B8aLcQwAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAAEQSURBVDiNpZMxTsNAEEX/rNeOAwUlHVdA4gJcAokLUNDRcAQkLkCBuACXoOAIFIgLIJGQHdu7M0W8kR3HSZQn/fLuzO7M/NEKEXHOgYhgjAGAFQBEREQ89YAxBogI11rr5wSMMedMHAb4ewSAIYAbEcFZK/j3iIgY51zdA/AOYCAiEBHP/r4UERG8MUbXMz8mcfQPQETYi4ja5T+lgHMO1hiz5HIhvmOA5eLH54E454oIi2g9zgOcEPjNMXES4NQI1G0CKCWsa4CkBOsqwDoStkUStkVQHhnbMprLRHhVAAdAvY3bX+kW4o2dCveBkFlxTfe1pV2bM6O0Y+WUI4Czi3WUjhCOAG4PQYg7ImJ/xd7nd4GIOFG63wGQZho+f8nTbAAAAABJRU5ErkJggg=='
+    );
+  }
   tray = new Tray(icon.resize({ width: 16, height: 16 }));
 
   const contextMenu = Menu.buildFromTemplate([
