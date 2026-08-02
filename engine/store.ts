@@ -15,6 +15,9 @@ const DEFAULT_SETTINGS = {
   llmModel: 'deepseek-chat',
   sttProvider: 'qwen' as const,
   autoStart: false,
+  mcpFilesystem: false,
+  mcpSqlite: false,
+  mcpGithub: false,
 };
 
 const ENCRYPTION_KEY = 'satsai-local-store-key-v1';

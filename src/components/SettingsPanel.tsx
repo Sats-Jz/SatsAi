@@ -16,6 +16,9 @@ export default function SettingsPanel({ onClose }: Props) {
     llmProvider: 'deepseek' as string,
     llmModel: 'deepseek-chat',
     autoStart: false,
+    mcpFilesystem: false,
+    mcpSqlite: false,
+    mcpGithub: false,
   });
 
   useEffect(() => {
@@ -79,6 +82,26 @@ export default function SettingsPanel({ onClose }: Props) {
             <label>Model</label>
             <input type="text" value={settings.llmModel} onChange={(e) => update('llmModel', e.target.value)} />
             <div className="hint">API key via SATSAI_LLM_API_KEY env var</div>
+          </section>
+
+          <section>
+            <h3>MCP Extensions</h3>
+            <label className="toggle-label">
+              <input type="checkbox" checked={settings.mcpFilesystem}
+                onChange={(e) => update('mcpFilesystem', e.target.checked)} />
+              Filesystem (file read/write)
+            </label>
+            <label className="toggle-label">
+              <input type="checkbox" checked={settings.mcpSqlite}
+                onChange={(e) => update('mcpSqlite', e.target.checked)} />
+              SQLite (local database queries)
+            </label>
+            <label className="toggle-label">
+              <input type="checkbox" checked={settings.mcpGithub}
+                onChange={(e) => update('mcpGithub', e.target.checked)} />
+              GitHub (issues, PRs, repos)
+            </label>
+            <div className="hint">Enables extra AI tools via Model Context Protocol</div>
           </section>
 
           <section>

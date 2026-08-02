@@ -163,15 +163,29 @@ export class Engine extends EventEmitter {
 
   async start(): Promise<void> {
     console.log('[Engine] Started (audio from renderer)');
-    // Connect enabled MCP servers
+    // Connect MCP servers based on user settings
+    const s = this.store.getSettings();
+    const mcpMap: Record<string, string> = {
+      filesystem: 'mcpFilesystem',
+      sqlite: 'mcpSqlite',
+      github: 'mcpGithub',
+    };
+
     try {
-      await this.mcpManager.initializeBuiltin();
+      // Import MCP servers config and enable per user settings
+      const { builtinServers } = await import('./mcp/servers');
+      for (const server of builtinServers) {
+        const key = mcpMap[server.name] as keyof typeof s;
+        if (key && s[key as keyof typeof s]) {
+          await this.mcpManager.connectServer({ ...server, enabled: true });
+        }
+      }
       const tools = this.mcpRegistry.listTools();
       if (tools.length > 0) {
-        console.log(`[Engine] MCP servers connected: ${tools.length} tools loaded`);
+        console.log(`[Engine] MCP: ${tools.length} tools from ${tools.filter((_, i, a) => i === a.findIndex(t => t.startsWith(t.split('__')[0]))).length} servers`);
       }
     } catch (err) {
-      console.warn('[Engine] MCP init failed (non-fatal):', err);
+      console.warn('[Engine] MCP init skipped (non-fatal):', (err as Error).message);
     }
   }
 
