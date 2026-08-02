@@ -24,7 +24,7 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['electron', 'bufferutil', 'utf-8-validate', 'ws', 'alibabacloud-nls', 'ffmpeg-static'],
+              external: ['electron', 'bufferutil', 'utf-8-validate', 'ws', 'alibabacloud-nls'],
             },
           },
         },

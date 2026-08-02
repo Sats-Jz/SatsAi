@@ -1,145 +1,122 @@
-/**
- * Qwen Real-time Speech Recognition via Aliyun NLS SDK.
- * npm: alibabacloud-nls | docs: https://help.aliyun.com/zh/isi/developer-reference/sdk-for-node-js
- *
- * Requirements: appkey (from NLS console) + token (your DashScope API key works)
- */
 import type { STTResult } from '../types';
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let Nls: any = null;
 
 export type STTProvider = 'qwen' | 'openai' | 'groq';
 
 export interface STTConfig {
   provider: STTProvider;
-  apiKey: string;    // DashScope API key (used as token)
-  appkey: string;    // NLS project appkey
+  apiKey: string;
+  appkey?: string;
   model?: string;
   language?: string;
 }
 
-// Singleton: one WebSocket connection reused
-let cachedAppkey = '';
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let cachedClient: any = null;
-
 export class STTClient {
-  private config: STTConfig;
+  private config: Required<Pick<STTConfig, 'provider'>> & STTConfig;
 
   constructor(config: STTConfig) {
-    this.config = { language: 'zh', ...config };
+    this.config = { provider: 'qwen', model: 'paraformer-v2', language: 'zh', ...config };
   }
 
-  async transcribe(pcm: Buffer): Promise<STTResult> {
-    if (this.config.provider !== 'qwen') {
-      return this.transcribeHTTP(pcm);
+  /**
+   * Transcribe audio. Accepts ANY format — WebM, WAV, MP3, etc.
+   * Qwen: file transcription REST (async submit + poll)
+   */
+  async transcribe(audio: Buffer): Promise<STTResult> {
+    if (this.config.provider === 'qwen') {
+      return this.qwenFile(audio);
     }
-    return this.transcribeNLS(pcm);
+    return this.httpRaw(audio);
   }
 
   /** OpenAI / Groq — HTTP multipart */
-  private async transcribeHTTP(pcm: Buffer): Promise<STTResult> {
-    const wav = STTClient.pcm2wav(pcm);
-    const fd = new FormData();
-    fd.append('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'audio.wav');
-    fd.append('model', this.config.model || 'whisper-1');
+  private async httpRaw(audio: Buffer): Promise<STTResult> {
     const base = this.config.provider === 'groq' ? 'https://api.groq.com/openai/v1' : 'https://api.openai.com/v1';
+    const fd = new FormData();
+    fd.append('file', new Blob([new Uint8Array(audio)], { type: 'audio/webm' }), 'audio.webm');
+    fd.append('model', this.config.model!);
     const r = await fetch(`${base}/audio/transcriptions`, {
       method: 'POST', headers: { Authorization: `Bearer ${this.config.apiKey}` }, body: fd,
     });
-    if (!r.ok) throw new Error(`STT ${r.status}`);
+    if (!r.ok) throw new Error(`STT ${r.status}: ${(await r.text()).slice(0, 200)}`);
     const d = (await r.json()) as { text: string };
     return { text: d.text || '', language: 'unknown', confidence: 0.95 };
   }
 
   /**
-   * Aliyun NLS real-time speech recognition.
-   * AppKey from NLS console project + token (your DashScope API Key).
+   * Qwen DashScope file transcription REST API.
+   * Submits a task → polls for result.
+   * Supports WebM/Opus input natively (no PCM conversion needed).
    */
-  private transcribeNLS(pcm: Buffer): Promise<STTResult> {
-    return new Promise(async (resolve, reject) => {
-      try {
-        if (!Nls) {
-          Nls = require('alibabacloud-nls');
-        }
+  private async qwenFile(audio: Buffer): Promise<STTResult> {
+    // Use DashScope file transcription API
+    // Upload audio as base64 data URL
+    const mime = audio[0] === 0x52 && audio[1] === 0x49 ? 'audio/wav' : 'audio/webm';
+    const b64 = audio.toString('base64');
+    const dataUrl = `data:${mime};base64,${b64}`;
 
-        // Reuse cached client for same appkey
-        if (cachedAppkey !== this.config.appkey) {
-          cachedAppkey = this.config.appkey;
-          cachedClient = null;
-        }
+    console.log('[STT] Qwen file transcription, size:', audio.length, 'mime:', mime);
 
-        if (!cachedClient) {
-          cachedClient = new Nls.SpeechTranscription({
-            url: 'wss://nls-gateway.cn-shanghai.aliyuncs.com/ws/v1',
-            appkey: this.config.appkey,
-            token: this.config.apiKey,  // DashScope API key works as token
-          });
-        }
-
-        const client = cachedClient;
-        const texts: string[] = [];
-
-        client.on('changed', (msg: unknown) => {
-          const m = msg as { payload?: { result?: string } };
-          const t = m.payload?.result || '';
-          if (t) texts.push(t);
-          console.log('[STT] Partial:', t);
-        });
-
-        client.on('completed', (msg: unknown) => {
-          console.log('[STT] Completed:', JSON.stringify(msg).slice(0, 200));
-        });
-
-        client.on('failed', (msg: unknown) => {
-          const err = new Error(`NLS failed: ${JSON.stringify(msg).slice(0, 300)}`);
-          reject(err);
-        });
-
-        client.on('closed', () => {
-          console.log('[STT] Connection closed');
-        });
-
-        // Start recognition
-        await client.start(client.defaultStartParams(), true, 6000);
-        console.log('[STT] NLS started, sending', pcm.length, 'bytes of PCM');
-
-        // Send audio in small chunks
-        const chunkSize = 3200;
-        for (let i = 0; i < pcm.length; i += chunkSize) {
-          const chunk = pcm.subarray(i, Math.min(i + chunkSize, pcm.length));
-          if (!client.sendAudio(chunk)) {
-            reject(new Error('sendAudio failed'));
-            return;
-          }
-          // Small delay to avoid flooding
-          await new Promise((r) => setTimeout(r, 20));
-        }
-
-        // Close to get final result
-        console.log('[STT] Closing NLS connection...');
-        await client.close();
-
-        const finalText = texts.join('');
-        console.log('[STT] Final text:', finalText || '(empty)');
-        resolve({ text: finalText, language: 'zh', confidence: 0.95 });
-      } catch (err) {
-        reject(err);
-      }
+    // Submit async task
+    const submitUrl = 'https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription';
+    const submitR = await fetch(submitUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.config.apiKey}`,
+        'Content-Type': 'application/json',
+        'X-DashScope-Async': 'enable',
+      },
+      body: JSON.stringify({
+        model: this.config.model,
+        input: { file_urls: [dataUrl] },
+        parameters: { language_hints: this.config.language ? [this.config.language] : ['zh', 'en'] },
+      }),
     });
-  }
 
-  static pcm2wav(pcm: Buffer, sr = 16000): Buffer {
-    const nc = 1, bps = 16, br = sr * nc * 2, ba = nc * 2, ds = pcm.length;
-    const w = Buffer.alloc(44 + ds); let o = 0;
-    w.write('RIFF', o); o += 4; w.writeUInt32LE(36 + ds, o); o += 4;
-    w.write('WAVE', o); o += 4; w.write('fmt ', o); o += 4;
-    w.writeUInt32LE(16, o); o += 4; w.writeUInt16LE(1, o); o += 2;
-    w.writeUInt16LE(nc, o); o += 2; w.writeUInt32LE(sr, o); o += 4;
-    w.writeUInt32LE(br, o); o += 4; w.writeUInt16LE(ba, o); o += 2;
-    w.writeUInt16LE(bps, o); o += 2; w.write('data', o); o += 4;
-    w.writeUInt32LE(ds, o); o += 4; pcm.copy(w, o);
-    return w;
+    if (!submitR.ok) {
+      const errText = await submitR.text();
+      throw new Error(`Qwen submit ${submitR.status}: ${errText.slice(0, 300)}`);
+    }
+
+    const task = (await submitR.json()) as {
+      output?: { task_id?: string; task_status?: string };
+    };
+    const tid = task.output?.task_id;
+    if (!tid) throw new Error('Qwen: no task_id. Response: ' + JSON.stringify(task).slice(0, 300));
+
+    console.log('[STT] Task:', tid, 'polling...');
+
+    // Poll for result
+    const pollUrl = `https://dashscope.aliyuncs.com/api/v1/tasks/${tid}`;
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      const pr = await fetch(pollUrl, {
+        headers: { Authorization: `Bearer ${this.config.apiKey}` },
+      });
+      if (!pr.ok) {
+        const errText = await pr.text();
+        console.log('[STT] Poll', pr.status, errText.slice(0, 200));
+        continue;
+      }
+      const pd = (await pr.json()) as {
+        output?: {
+          task_status?: string;
+          results?: Array<{ sentences?: Array<{ text: string }> }>;
+        };
+      };
+      const status = pd.output?.task_status;
+      if (status === 'SUCCEEDED') {
+        const text = pd.output?.results?.[0]?.sentences?.map((s) => s.text).join('') || '';
+        console.log('[STT] Result:', text || '(empty)');
+        return { text, language: 'zh', confidence: 0.95 };
+      }
+      if (status === 'FAILED') {
+        throw new Error(`Qwen failed: ${JSON.stringify(pd.output).slice(0, 300)}`);
+      }
+      if (status === 'PENDING' || status === 'RUNNING') {
+        if (i % 4 === 0) process.stdout.write('.');
+        continue;
+      }
+    }
+    throw new Error('Qwen: polling timeout (30s)');
   }
 }
