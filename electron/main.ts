@@ -42,7 +42,7 @@ function createWindow() {
     const devUrl = (typeof process !== 'undefined' && (process.env as Record<string, string>).VITE_DEV_SERVER_URL)
       || 'http://localhost:5173';
     mainWindow.loadURL(devUrl);
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
+    // mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
@@ -184,19 +184,31 @@ app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 app.commandLine.appendSwitch('disable-http-cache');
 
 app.whenReady().then(() => {
-  // Grant microphone permission — without this, getUserMedia kills renderer
-  const { session } = require('electron');
-  session.defaultSession.setPermissionRequestHandler(
-    (_webContents: Electron.WebContents, permission: string, callback: (granted: boolean) => void) => {
-      if (permission === 'media') callback(true);
-      else callback(false);
-    }
-  );
-
   setupIPC();
   createWindow();
   createTray();
   initEngine();
+
+  // Grant microphone permission on this window
+  mainWindow?.webContents.session.setPermissionRequestHandler(
+    (_wc: Electron.WebContents, permission: string, callback: (granted: boolean) => void, details: { mediaTypes?: string[] }) => {
+      if (permission === 'media' && details.mediaTypes?.includes('audio')) {
+        callback(true);
+      } else if (permission === 'media') {
+        callback(true);  // Grant all media for simplicity
+      } else {
+        callback(false);
+      }
+    }
+  );
+
+  // Also pre-grant via default session
+  const { session } = require('electron');
+  session.defaultSession.setPermissionRequestHandler(
+    (_wc: Electron.WebContents, permission: string, callback: (granted: boolean) => void) => {
+      callback(permission === 'media');
+    }
+  );
 });
 
 app.on('window-all-closed', () => {

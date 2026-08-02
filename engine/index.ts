@@ -82,26 +82,33 @@ export class Engine extends EventEmitter {
     this.setState('listening');
   }
 
-  /** Process raw PCM audio from renderer */
-  async processAudio(rawBuffer: Buffer | ArrayBuffer): Promise<void> {
-    if (this.busy) { console.log('[Engine] Busy'); return; }
+  /** Process audio from renderer (raw ArrayBuffer from MediaRecorder) */
+  async processAudio(raw: Buffer | ArrayBuffer): Promise<void> {
+    if (this.busy) return;
     this.busy = true;
-
     try {
-      const pcm = Buffer.isBuffer(rawBuffer) ? rawBuffer : Buffer.from(rawBuffer);
-      console.log('[Engine] Audio:', pcm.length, 'bytes');
-      if (pcm.length < 500) { this[emit]('error', { message: '语音太短' }); this.setState('idle'); return; }
+      const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+      console.log('[Engine] Audio:', buf.length, 'bytes');
+      if (buf.length < 500) { this[emit]('error', { message: '语音太短' }); this.setState('idle'); return; }
+      await this.runPipeline(buf);
+    } catch (err) {
+      this[emit]('error', { message: (err as Error).message });
+      this.setState('idle');
+      this.busy = false;
+    }
+  }
 
+  async runPipeline(pcm: Buffer): Promise<void> {
+    this.busy = true;
+    try {
       this.setState('thinking');
 
-      // STT
       console.log('[Engine] → STT...');
       const stt = await this.sttClient.transcribe(pcm);
       console.log('[Engine] STT:', stt.text);
-      if (!stt.text.trim()) { this[emit]('error', { message: '没有识别到语音' }); this.setState('idle'); return; }
+      if (!stt.text.trim()) { this[emit]('error', { message: '没有识别到语音' }); return; }
       this[emit]('transcript', { text: stt.text });
 
-      // LLM
       console.log('[Engine] → LLM...');
       const tools = buildLLMTools(this.actionRegistry, this.mcpRegistry);
       this.conversationHistory.push({ role: 'user', content: stt.text });
@@ -112,7 +119,6 @@ export class Engine extends EventEmitter {
         console.log('[Engine] Execute:', tc.name, tc.arguments);
         const r = await this.actionRegistry.execute(tc.name, tc.arguments);
         this[emit]('action-executed', { result: r });
-        console.log('[Engine] Result:', r.message);
       }
 
       this.setState('speaking');
@@ -121,15 +127,14 @@ export class Engine extends EventEmitter {
 
       try { const audio = await this.ttsClient.synthesize(llm.text); this.emit('tts-audio', audio); }
       catch (e) { console.error('TTS:', e); }
-
-      this.setState('idle');
     } catch (err) {
       const msg = (err as Error).message;
       console.error('[Engine] Error:', msg);
       this[emit]('error', { message: msg });
-      this[emit]('response', { text: `出错了: ${msg}` });
+    } finally {
       this.setState('idle');
-    } finally { this.busy = false; }
+      this.busy = false;
+    }
   }
 
   async start(): Promise<void> {
