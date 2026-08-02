@@ -5,6 +5,10 @@ import electronRenderer from 'vite-plugin-electron-renderer'
 import path from 'path'
 
 export default defineConfig({
+  server: {
+    strictPort: true,
+    port: 5173,
+  },
   plugins: [
     react(),
     electron([
