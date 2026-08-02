@@ -11,13 +11,15 @@ const isDev = !app.isPackaged;
 let isQuitting = false;
 
 function createWindow() {
-  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+  const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
+  const winW = 200;
+  const winH = 200;
 
   mainWindow = new BrowserWindow({
-    width: 120,
-    height: 120,
-    x: width - 140,
-    y: height - 160,
+    width: winW,
+    height: winH,
+    x: screenW - winW - 8,
+    y: screenH - winH - 48,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -31,7 +33,6 @@ function createWindow() {
   });
 
   if (isDev) {
-    // vite-plugin-electron injects process.env.VITE_DEV_SERVER_URL
     const devUrl = (typeof process !== 'undefined' && (process.env as Record<string, string>).VITE_DEV_SERVER_URL)
       || 'http://localhost:5173';
     mainWindow.loadURL(devUrl);

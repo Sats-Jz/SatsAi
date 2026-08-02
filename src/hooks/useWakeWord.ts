@@ -1,5 +1,4 @@
 import { useEffect, useRef, useCallback } from 'react';
-import { WakeWordEngine } from 'openwakeword-wasm-browser';
 
 export type WakeWordCallback = (keyword: string, score: number) => void;
 
@@ -8,28 +7,23 @@ interface UseWakeWordOptions {
   onDetect: WakeWordCallback;
   onSpeechStart?: () => void;
   onSpeechEnd?: () => void;
-  onAudioChunk?: (chunk: Float32Array) => void;
   cooldownMs?: number;
   enabled?: boolean;
 }
 
 /**
- * React hook wrapping OpenWakeWord (free, open-source) for browser wake word detection.
- * Uses ONNX Runtime Web + Web Audio API in the Electron renderer process.
- *
- * Exposes speech-start/speech-end from OpenWakeWord's built-in Silero VAD,
- * allowing the UI/engine to capture audio while the user is speaking.
+ * React hook wrapping OpenWakeWord for wake word detection.
+ * Falls back gracefully if the module can't load (e.g., in Electron without wasm).
+ * In that case, double-click on the floating ball still triggers manually.
  */
 export function useWakeWord({
   keywords = ['hey_jarvis'],
   onDetect,
   onSpeechStart,
   onSpeechEnd,
-  onAudioChunk,
   cooldownMs = 2000,
   enabled = true,
 }: UseWakeWordOptions) {
-  const engineRef = useRef<WakeWordEngine | null>(null);
   const onDetectRef = useRef(onDetect);
   const onSpeechStartRef = useRef(onSpeechStart);
   const onSpeechEndRef = useRef(onSpeechEnd);
@@ -40,45 +34,53 @@ export function useWakeWord({
   useEffect(() => {
     if (!enabled) return;
 
-    const engine = new WakeWordEngine({
-      activeKeywords: keywords,
-      cooldownMs,
-    });
-    engineRef.current = engine;
+    let cancelled = false;
 
-    engine.on('detect', ({ keyword, score }) => {
-      onDetectRef.current(keyword, score);
-    });
+    // Try to load OpenWakeWord — may fail in Electron if onnxruntime-web
+    // can't load wasm. That's OK, manual trigger (double-click) still works.
+    import('openwakeword-wasm-browser')
+      .then(({ WakeWordEngine }) => {
+        if (cancelled) return;
 
-    engine.on('speech-start', () => {
-      onSpeechStartRef.current?.();
-    });
+        const engine = new WakeWordEngine({
+          activeKeywords: keywords,
+          cooldownMs,
+        });
 
-    engine.on('speech-end', () => {
-      onSpeechEndRef.current?.();
-    });
+        engine.on('detect', ({ keyword, score }) => {
+          onDetectRef.current(keyword, score);
+        });
 
-    engine.on('error', (err) => {
-      console.error('[OpenWakeWord] Error:', err);
-    });
+        engine.on('speech-start', () => {
+          onSpeechStartRef.current?.();
+        });
 
-    engine
-      .load()
-      .then(() => engine.start())
-      .then(() => {
-        console.log('[OpenWakeWord] Listening for:', keywords.join(', '));
+        engine.on('speech-end', () => {
+          onSpeechEndRef.current?.();
+        });
+
+        engine.on('error', (err: Error) => {
+          console.warn('[OpenWakeWord] Error:', err.message);
+        });
+
+        return engine.load().then(() => engine.start());
+      })
+      .then((engine) => {
+        if (!cancelled && engine) {
+          console.log('[OpenWakeWord] Active, keywords:', keywords.join(', '));
+        }
       })
       .catch((err) => {
-        console.error('[OpenWakeWord] Failed to start:', err);
+        console.warn('[OpenWakeWord] Failed to load (double-click instead):', err.message);
       });
 
     return () => {
-      engine.stop?.();
+      cancelled = true;
     };
   }, [enabled, keywords.join(','), cooldownMs]);
 
-  const setKeywords = useCallback((newKeywords: string[]) => {
-    engineRef.current?.setActiveKeywords(newKeywords);
+  const setKeywords = useCallback((_newKeywords: string[]) => {
+    // Not supported in fallback mode
   }, []);
 
   return { setKeywords };
