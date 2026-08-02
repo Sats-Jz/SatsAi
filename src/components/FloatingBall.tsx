@@ -3,7 +3,7 @@ import { useAppStore } from '../stores/appStore';
 import WaveAnimation from './WaveAnimation';
 import './FloatingBall.css';
 
-const RECORD_MS = 8000;
+const MAX_MS = 8000;
 
 export default function FloatingBall() {
   const voiceState = useAppStore((s) => s.voiceState);
@@ -20,7 +20,7 @@ export default function FloatingBall() {
 
   const cleanup = useCallback(() => {
     clearInterval(timerRef.current);
-    ctxRef.current?.close();
+    ctxRef.current?.close().catch(() => {});
     ctxRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
@@ -29,66 +29,56 @@ export default function FloatingBall() {
   useEffect(() => cleanup, [cleanup]);
 
   const wake = useCallback(async () => {
-    if (ctxRef.current) return; // Already recording
+    if (ctxRef.current) return;
     window.electronAPI?.wakeWordDetected('manual', 1.0);
 
+    let ctx: AudioContext | null = null;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
       streamRef.current = stream;
-
-      // Use ScriptProcessor to capture raw PCM — NO MediaRecorder, NO WebM, NO decode
-      const ctx = new AudioContext({ sampleRate: 16000 });
+      ctx = new AudioContext({ sampleRate: 16000 });
       ctxRef.current = ctx;
+
       const source = ctx.createMediaStreamSource(stream);
       const processor = ctx.createScriptProcessor(4096, 1, 1);
       chunks.current = [];
 
       processor.onaudioprocess = (e) => {
         const input = e.inputBuffer.getChannelData(0);
-        // Convert Float32 → Int16
-        const int16 = new Int16Array(input.length);
-        for (let i = 0; i < input.length; i++) {
-          int16[i] = Math.max(-32768, Math.min(32767, Math.round(input[i] * 32767)));
-        }
-        chunks.current.push(int16);
+        const i16 = new Int16Array(input.length);
+        for (let i = 0; i < input.length; i++) i16[i] = Math.round(Math.max(-1, Math.min(1, input[i])) * 32767);
+        chunks.current.push(i16);
       };
 
       source.connect(processor);
       processor.connect(ctx.destination);
       setRecording(true);
-      setCountdown(Math.ceil(RECORD_MS / 1000));
+      setCountdown(Math.ceil(MAX_MS / 1000));
 
       timerRef.current = setInterval(() => {
         setCountdown((prev) => {
           if (prev <= 1) {
-            // Stop recording
             source.disconnect();
             processor.disconnect();
             cleanup();
             setRecording(false);
 
-            // Merge all Int16 chunks → one ArrayBuffer
             const totalLen = chunks.current.reduce((s, c) => s + c.length, 0);
-            if (totalLen < 1000) return 0; // too short
-
-            const merged = new Int16Array(totalLen);
-            let off = 0;
-            for (const c of chunks.current) {
-              merged.set(c, off);
-              off += c.length;
+            if (totalLen > 500) {
+              const merged = new Int16Array(totalLen);
+              let off = 0;
+              for (const c of chunks.current) { merged.set(c, off); off += c.length; }
+              window.electronAPI?.processAudio(merged.buffer.slice(merged.byteOffset, merged.byteOffset + merged.byteLength));
             }
-            // Send raw 16-bit PCM via IPC
-            window.electronAPI?.processAudio(merged.buffer.slice(merged.byteOffset, merged.byteOffset + merged.byteLength));
-
             return 0;
           }
           return prev - 1;
         });
       }, 1000);
     } catch (err) {
-      console.error('[Ball] Mic failed:', err);
+      console.error('[Ball] Mic:', err);
       cleanup();
       setRecording(false);
     }
@@ -99,7 +89,7 @@ export default function FloatingBall() {
     return () => window.electronAPI?.removeAllListeners('start-listening');
   }, [wake]);
 
-  const face = recording ? '\u{1F3A4}'
+  const face = recording || voiceState === 'listening' ? '\u{1F3A4}'
     : voiceState === 'thinking' ? '\u{1F914}'
     : voiceState === 'speaking' ? '\u{1F4AC}'
     : '\u{1F60A}';

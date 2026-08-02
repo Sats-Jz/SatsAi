@@ -78,68 +78,58 @@ export class Engine extends EventEmitter {
   /** Triggered when the user double-clicks or uses tray wake */
   triggerListening(): void {
     if (this.busy) return;
+    if (this.state !== 'idle') return;
     this.setState('listening');
   }
 
-  /** Process recorded audio — full pipeline. Receives raw WebM bytes. */
+  /** Process raw PCM audio from renderer */
   async processAudio(rawBuffer: Buffer | ArrayBuffer): Promise<void> {
-    if (this.busy) { console.log('[Engine] Busy, ignoring'); return; }
+    if (this.busy) { console.log('[Engine] Busy'); return; }
     this.busy = true;
 
     try {
-      const wav = Buffer.isBuffer(rawBuffer) ? rawBuffer : Buffer.from(rawBuffer);
-      console.log('[Engine] Audio received:', wav.length, 'bytes');
-      if (wav.length < 500) {
-        this[emit]('error', { message: '语音太短' });
-        this.setState('idle');
-        this.busy = false;
-        return;
-      }
+      const pcm = Buffer.isBuffer(rawBuffer) ? rawBuffer : Buffer.from(rawBuffer);
+      console.log('[Engine] Audio:', pcm.length, 'bytes');
+      if (pcm.length < 500) { this[emit]('error', { message: '语音太短' }); this.setState('idle'); return; }
 
       this.setState('thinking');
 
-      // === STT ===
+      // STT
       console.log('[Engine] → STT...');
-      const stt = await this.sttClient.transcribe(wav);
+      const stt = await this.sttClient.transcribe(pcm);
       console.log('[Engine] STT:', stt.text);
+      if (!stt.text.trim()) { this[emit]('error', { message: '没有识别到语音' }); this.setState('idle'); return; }
       this[emit]('transcript', { text: stt.text });
 
-      // === LLM ===
+      // LLM
       console.log('[Engine] → LLM...');
       const tools = buildLLMTools(this.actionRegistry, this.mcpRegistry);
       this.conversationHistory.push({ role: 'user', content: stt.text });
-
       const llm = await this.llmClient.chat(stt.text, tools, this.conversationHistory.slice(-10));
       console.log('[Engine] LLM:', llm.text, '| tools:', llm.toolCalls.length);
 
-      // Execute function calls
       for (const tc of llm.toolCalls) {
         console.log('[Engine] Execute:', tc.name, tc.arguments);
-        const result = await this.actionRegistry.execute(tc.name, tc.arguments);
-        this[emit]('action-executed', { result });
-        console.log('[Engine] Result:', result.message);
+        const r = await this.actionRegistry.execute(tc.name, tc.arguments);
+        this[emit]('action-executed', { result: r });
+        console.log('[Engine] Result:', r.message);
       }
 
       this.setState('speaking');
       this[emit]('response', { text: llm.text });
       this.conversationHistory.push({ role: 'assistant', content: llm.text });
 
-      // === TTS ===
-      try {
-        const audio = await this.ttsClient.synthesize(llm.text);
-        this.emit('tts-audio', audio);
-      } catch (e) { console.error('TTS:', e); }
+      try { const audio = await this.ttsClient.synthesize(llm.text); this.emit('tts-audio', audio); }
+      catch (e) { console.error('TTS:', e); }
 
       this.setState('idle');
     } catch (err) {
       const msg = (err as Error).message;
-      console.error('[Engine] Pipeline error:', msg);
+      console.error('[Engine] Error:', msg);
       this[emit]('error', { message: msg });
-      this[emit]('response', { text: `出错了：${msg}` });
+      this[emit]('response', { text: `出错了: ${msg}` });
       this.setState('idle');
-    } finally {
-      this.busy = false;
-    }
+    } finally { this.busy = false; }
   }
 
   async start(): Promise<void> {
