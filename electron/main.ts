@@ -1,7 +1,13 @@
 import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen } from 'electron';
 import path from 'path';
+import dotenv from 'dotenv';
+
 import { Engine } from '../engine/index';
 import type { EngineEvent } from '../engine/types';
+
+// Load .env before creating Engine
+dotenv.config({ path: path.join(process.cwd(), '.env'), override: false });
+dotenv.config({ path: path.resolve(__dirname, '..', '.env'), override: false });
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -81,12 +87,17 @@ function createTray() {
 function initEngine() {
   const userDataPath = app.getPath('userData');
 
+  const llmKey = process.env.SATSAI_LLM_API_KEY || '';
+  const sttKey = process.env.SATSAI_STT_API_KEY || '';
+  console.log('[Main] LLM key loaded:', llmKey ? `yes (${llmKey.slice(0, 6)}...)` : 'NO');
+  console.log('[Main] STT key loaded:', sttKey ? `yes (${sttKey.slice(0, 6)}...)` : 'NO');
+
   engine = new Engine({
     dataDir: userDataPath,
-    sttApiKey: process.env.SATSAI_STT_API_KEY || '',
+    sttApiKey: sttKey,
     sttProvider: (process.env.SATSAI_STT_PROVIDER as 'qwen' | 'openai') || 'qwen',
     llmProvider: (process.env.SATSAI_LLM_PROVIDER as 'deepseek' | 'openai' | 'qwen' | 'claude') || 'deepseek',
-    llmApiKey: process.env.SATSAI_LLM_API_KEY || '',
+    llmApiKey: llmKey,
   });
 
   engine.on('engine-event', (event: EngineEvent) => {
