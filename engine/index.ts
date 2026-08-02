@@ -12,6 +12,7 @@ import { systemActions } from './actions/system';
 import { webActions } from './actions/web';
 import { MCPClientManager } from './mcp/client';
 import { MCPToolRegistry } from './mcp/registry';
+import { webmToPcm } from './audio';
 import { AppStore } from './store';
 import type { EngineEvent, DialogState } from './types';
 
@@ -90,8 +91,16 @@ export class Engine extends EventEmitter {
       const webm = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
       console.log('[Engine] WebM:', webm.length, 'bytes');
       if (webm.length < 500) { this[emit]('error', { message: '语音太短' }); this.setState('idle'); return; }
+
+      // Decode WebM → PCM (prism-media + @discordjs/opus)
+      const pcm = await webmToPcm(webm);
+      console.log('[Engine] PCM:', pcm.length, 'bytes, first 10 Int16:',
+        [...Array(Math.min(10, pcm.length / 2))].map((_, i) => pcm.readInt16LE(i * 2)).join(' '));
+
+      if (pcm.length < 500) { this[emit]('error', { message: '语音太短' }); this.setState('idle'); return; }
+
       this.setState('thinking');
-      await this.runPipeline(webm);
+      await this.runPipeline(pcm);
     } catch (err) {
       this[emit]('error', { message: (err as Error).message });
       this.setState('idle');
