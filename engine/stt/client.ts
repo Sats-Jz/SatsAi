@@ -46,8 +46,6 @@ export class STTClient {
     return this.transcribeOpenAI(audioBuffer);
   }
 
-  }
-
   /** OpenAI / Groq: HTTP multipart upload */
   private async transcribeOpenAI(audioBuffer: Buffer): Promise<STTResult> {
     const wavBuffer = STTClient.pcmToWav(audioBuffer);
