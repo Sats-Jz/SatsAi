@@ -36,8 +36,11 @@ export function useWakeWord({
 
     let cancelled = false;
 
-    // Try to load OpenWakeWord — may fail in Electron if onnxruntime-web
-    // can't load wasm. That's OK, manual trigger (double-click) still works.
+    // Pre-configure ONNX wasm path to CDN (Vite dev server can't serve .wasm)
+    const onnxVersion = '1.27.0';
+    (globalThis as Record<string, unknown>).ortWasmPath =
+      `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/`;
+
     import('openwakeword-wasm-browser')
       .then(({ WakeWordEngine }) => {
         if (cancelled) return;
@@ -45,6 +48,7 @@ export function useWakeWord({
         const engine = new WakeWordEngine({
           activeKeywords: keywords,
           cooldownMs,
+          ortWasmPath: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/`,
         });
 
         engine.on('detect', ({ keyword, score }) => {

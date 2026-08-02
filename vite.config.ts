@@ -9,6 +9,12 @@ export default defineConfig({
     strictPort: true,
     port: 5173,
   },
+  optimizeDeps: {
+    exclude: ['openwakeword-wasm-browser', 'onnxruntime-web'],
+  },
+  build: {
+    target: 'esnext',
+  },
   plugins: [
     react(),
     electron([
