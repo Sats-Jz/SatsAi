@@ -3,12 +3,26 @@ import type { ActionRegistry } from '../actions/index';
 import type { LLMResponse, ToolCall } from '../types';
 
 export interface LLMConfig {
-  provider: 'claude' | 'openai';
+  provider: 'claude' | 'openai' | 'deepseek' | 'qwen';
   apiKey: string;
   model?: string;
   baseUrl?: string;
   maxTokens?: number;
 }
+
+const DEFAULT_MODELS: Record<string, string> = {
+  claude: 'claude-sonnet-5-20251001',
+  openai: 'gpt-4o',
+  deepseek: 'deepseek-chat',
+  qwen: 'qwen-plus',
+};
+
+const DEFAULT_BASE_URLS: Record<string, string> = {
+  claude: 'https://api.anthropic.com/v1/messages',
+  openai: 'https://api.openai.com/v1/chat/completions',
+  deepseek: 'https://api.deepseek.com/v1/chat/completions',
+  qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+};
 
 export class LLMClient {
   private config: LLMConfig;
@@ -16,8 +30,9 @@ export class LLMClient {
 
   constructor(config: LLMConfig, actionRegistry: ActionRegistry) {
     this.config = {
-      model: config.provider === 'claude' ? 'claude-sonnet-5-20251001' : 'gpt-4o',
+      model: DEFAULT_MODELS[config.provider] || 'deepseek-chat',
       maxTokens: 1024,
+      baseUrl: DEFAULT_BASE_URLS[config.provider],
       ...config,
     };
     this.actionRegistry = actionRegistry;
@@ -28,9 +43,11 @@ export class LLMClient {
     tools: LLMToolDefinition[],
     conversationHistory: Array<{ role: string; content: string }> = []
   ): Promise<LLMResponse> {
-    return this.config.provider === 'claude'
-      ? this.chatWithClaude(userMessage, tools, conversationHistory)
-      : this.chatWithOpenAI(userMessage, tools, conversationHistory);
+    if (this.config.provider === 'claude') {
+      return this.chatWithClaude(userMessage, tools, conversationHistory);
+    }
+    // deepseek, openai, qwen all use OpenAI-compatible API format
+    return this.chatWithOpenAI(userMessage, tools, conversationHistory);
   }
 
   private async chatWithClaude(

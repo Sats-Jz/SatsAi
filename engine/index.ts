@@ -20,11 +20,10 @@ import type { EngineEvent, DialogState } from './types';
 export interface EngineConfig {
   dataDir: string;
   sttApiKey: string;
-  llmProvider: 'claude' | 'openai';
+  sttProvider: 'qwen' | 'openai';
+  llmProvider: 'deepseek' | 'openai' | 'qwen' | 'claude';
   llmApiKey: string;
-  hotwordAccessKey: string;
-  hotwordModelPath: string;
-  hotwordKeywordPath: string;
+  hotwordModelDir: string;
 }
 
 export class Engine extends EventEmitter {
@@ -64,16 +63,19 @@ export class Engine extends EventEmitter {
     });
 
     this.hotword = new HotwordDetector({
-      accessKey: config.hotwordAccessKey,
-      modelPath: config.hotwordModelPath,
-      keywordPaths: [config.hotwordKeywordPath],
+      accessKey: '',
+      modelPath: config.hotwordModelDir + '/porcupine_params.pv',
+      keywordPaths: [config.hotwordModelDir + '/hey-sats_win.ppn'],
       sensitivities: [settings.hotwordSensitivity],
     });
 
     this.speakerEnroller = new SpeakerEnroller();
     this.speakerVerifier = new SpeakerVerifier({ threshold: settings.speakerThreshold });
 
-    this.sttClient = new STTClient({ apiKey: config.sttApiKey });
+    this.sttClient = new STTClient({
+      provider: config.sttProvider,
+      apiKey: config.sttApiKey,
+    });
     this.ttsClient = new TTSClient({ voice: settings.ttsVoice, rate: settings.ttsRate });
 
     this.actionRegistry = createActionRegistry();
@@ -121,10 +123,9 @@ export class Engine extends EventEmitter {
 
     this.stateMachine.onSpeechEnd(audioBuffer);
 
-    // Convert to WAV and transcribe
-    const wavBuffer = STTClient.pcmToWav(audioBuffer);
+    // Transcribe via STT
     try {
-      const result = await this.sttClient.transcribe(wavBuffer);
+      const result = await this.sttClient.transcribe(audioBuffer);
       this.emit('engine-event', { type: 'transcript', text: result.text } as EngineEvent);
 
       // Send to LLM

@@ -6,9 +6,11 @@ release/
 *.log
 .env
 .env.*
+APIKEYS.md
 *.tsbuildinfo
 Thumbs.db
 .vscode/
 .idea/
 *.local
 coverage/
+.claude/

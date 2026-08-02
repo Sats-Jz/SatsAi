@@ -10,9 +10,10 @@ const DEFAULT_SETTINGS = {
   language: 'auto' as const,
   ttsVoice: 'zh-CN-XiaoxiaoNeural',
   ttsRate: 1.0,
-  llmProvider: 'claude' as const,
+  llmProvider: 'deepseek' as const,
   llmApiKey: '',
-  llmModel: 'claude-sonnet-5-20251001',
+  llmModel: 'deepseek-chat',
+  sttProvider: 'qwen' as const,
   autoStart: false,
 };
 

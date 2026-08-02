@@ -13,8 +13,8 @@ export default function SettingsPanel({ onClose }: Props) {
     language: 'auto' as string,
     ttsVoice: 'zh-CN-XiaoxiaoNeural',
     ttsRate: 1.0,
-    llmProvider: 'claude' as string,
-    llmModel: 'claude-sonnet-5-20251001',
+    llmProvider: 'deepseek' as string,
+    llmModel: 'deepseek-chat',
     autoStart: false,
   });
 
@@ -71,8 +71,10 @@ export default function SettingsPanel({ onClose }: Props) {
             <h3>AI</h3>
             <label>Provider</label>
             <select value={settings.llmProvider} onChange={(e) => update('llmProvider', e.target.value)}>
-              <option value="claude">Claude (Anthropic)</option>
+              <option value="deepseek">DeepSeek V4</option>
+              <option value="qwen">Qwen (Tongyi)</option>
               <option value="openai">OpenAI (GPT)</option>
+              <option value="claude">Claude (Anthropic)</option>
             </select>
             <label>Model</label>
             <input type="text" value={settings.llmModel} onChange={(e) => update('llmModel', e.target.value)} />

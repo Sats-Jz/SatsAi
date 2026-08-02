@@ -71,11 +71,10 @@ function initEngine() {
   engine = new Engine({
     dataDir: userDataPath,
     sttApiKey: process.env.SATSAI_STT_API_KEY || '',
-    llmProvider: (process.env.SATSAI_LLM_PROVIDER as 'claude' | 'openai') || 'claude',
+    sttProvider: (process.env.SATSAI_STT_PROVIDER as 'qwen' | 'openai') || 'qwen',
+    llmProvider: (process.env.SATSAI_LLM_PROVIDER as 'deepseek' | 'openai' | 'qwen' | 'claude') || 'deepseek',
     llmApiKey: process.env.SATSAI_LLM_API_KEY || '',
-    hotwordAccessKey: process.env.SATSAI_PICOVOICE_KEY || '',
-    hotwordModelPath: path.join(__dirname, '../resources/models/porcupine_params.pv'),
-    hotwordKeywordPath: path.join(__dirname, '../resources/models/hey-sats_win.ppn'),
+    hotwordModelDir: path.join(__dirname, '../resources/models'),
   });
 
   engine.on('engine-event', (event: EngineEvent) => {

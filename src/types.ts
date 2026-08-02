@@ -17,7 +17,7 @@ export interface AppSettings {
   language: 'zh-CN' | 'en-US' | 'auto';
   ttsVoice: string;
   ttsRate: number;
-  llmProvider: 'claude' | 'openai';
+  llmProvider: 'deepseek' | 'openai' | 'qwen' | 'claude';
   llmApiKey: string;
   llmModel: string;
   autoStart: boolean;
