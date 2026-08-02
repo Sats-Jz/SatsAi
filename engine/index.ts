@@ -12,7 +12,6 @@ import { systemActions } from './actions/system';
 import { webActions } from './actions/web';
 import { MCPClientManager } from './mcp/client';
 import { MCPToolRegistry } from './mcp/registry';
-import { webmToPcm } from './audio';
 import { AppStore } from './store';
 import type { EngineEvent, DialogState } from './types';
 

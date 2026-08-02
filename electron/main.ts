@@ -1,11 +1,10 @@
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen } from 'electron';
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen, session } from 'electron';
 import path from 'path';
 import dotenv from 'dotenv';
-
 import { Engine } from '../engine/index';
 import type { EngineEvent } from '../engine/types';
 
-// Load .env before creating Engine
+// Load .env
 dotenv.config({ path: path.join(process.cwd(), '.env'), override: false });
 dotenv.config({ path: path.resolve(__dirname, '..', '.env'), override: false });
 
@@ -16,81 +15,72 @@ let engine: Engine | null = null;
 const isDev = !app.isPackaged;
 let isQuitting = false;
 
+// Pre-grant microphone — MUST be before any window loads
+session.defaultSession.setPermissionRequestHandler(
+  (_wc, permission, cb) => cb(permission === 'media')
+);
+
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+
 function createWindow() {
   const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
-  const winW = 200;
-  const winH = 200;
-
   mainWindow = new BrowserWindow({
-    width: winW,
-    height: winH,
-    x: screenW - winW - 8,
-    y: screenH - winH - 48,
-    frame: false,
-    transparent: true,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    resizable: false,
+    width: 200, height: 200,
+    x: screenW - 208, y: screenH - 248,
+    frame: false, transparent: true,
+    alwaysOnTop: true, skipTaskbar: true, resizable: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
+      contextIsolation: true, nodeIntegration: false,
     },
   });
 
+  // Also grant on this window's session
+  mainWindow.webContents.session.setPermissionRequestHandler(
+    (_wc, permission, cb, details?: { mediaTypes?: string[] }) => {
+      cb(permission === 'media');
+    }
+  );
+
   if (isDev) {
-    const devUrl = (typeof process !== 'undefined' && (process.env as Record<string, string>).VITE_DEV_SERVER_URL)
-      || 'http://localhost:5173';
+    const devUrl = (process.env as Record<string, string>).VITE_DEV_SERVER_URL || 'http://localhost:5173';
     mainWindow.loadURL(devUrl);
-    // mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
   mainWindow.on('close', (e) => {
-    if (!isQuitting) {
-      e.preventDefault();
-      mainWindow?.hide();
-    }
+    if (!isQuitting) { e.preventDefault(); mainWindow?.hide(); }
   });
 }
 
 function createTray() {
-  // Use bundled icon or create a visible fallback
   let icon: Electron.NativeImage;
-  const iconPath = path.join(__dirname, isDev ? '../resources/assets/icon.png' : '../resources/assets/icon.png');
   try {
-    icon = nativeImage.createFromPath(iconPath);
+    icon = nativeImage.createFromPath(path.join(__dirname, '../resources/assets/icon.png'));
   } catch {
-    icon = nativeImage.createFromDataURL(
-      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAAbwAAAG8B8aLcQwAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAAEQSURBVDiNpZMxTsNAEEX/rNeOAwUlHVdA4gJcAokLUNDRcAQkLkCBuACXoOAIFIgLIJGQHdu7M0W8kR3HSZQn/fLuzO7M/NEKEXHOgYhgjAGAFQBEREQ89YAxBogI11rr5wSMMedMHAb4ewSAIYAbEcFZK/j3iIgY51zdA/AOYCAiEBHP/r4UERG8MUbXMz8mcfQPQETYi4ja5T+lgHMO1hiz5HIhvmOA5eLH54E454oIi2g9zgOcEPjNMXES4NQI1G0CKCWsa4CkBOsqwDoStkUStkVQHhnbMprLRHhVAAdAvY3bX+kW4o2dCveBkFlxTfe1pV2bM6O0Y+WUI4Czi3WUjhCOAG4PQYg7ImJ/xd7nd4GIOFG63wGQZho+f8nTbAAAAABJRU5ErkJggg=='
-    );
+    icon = nativeImage.createEmpty();
   }
   tray = new Tray(icon.resize({ width: 16, height: 16 }));
 
-  const contextMenu = Menu.buildFromTemplate([
+  const menu = Menu.buildFromTemplate([
     { label: '唤醒助手', click: () => mainWindow?.webContents.send('start-listening') },
     { type: 'separator' },
     { label: '设置', click: () => mainWindow?.webContents.send('open-settings') },
     { type: 'separator' },
     { label: '退出 SatsAi', click: () => { isQuitting = true; app.quit(); } },
   ]);
-
-  tray.setToolTip('SatsAi - 桌面助手');
-  tray.setContextMenu(contextMenu);
-  tray.on('double-click', () => {
-    mainWindow?.show();
-    mainWindow?.webContents.send('start-listening');
-  });
+  tray.setToolTip('SatsAi');
+  tray.setContextMenu(menu);
+  tray.on('double-click', () => { mainWindow?.show(); mainWindow?.webContents.send('start-listening'); });
 }
 
 function initEngine() {
   const userDataPath = app.getPath('userData');
-
   const llmKey = process.env.SATSAI_LLM_API_KEY || '';
   const sttKey = process.env.SATSAI_STT_API_KEY || '';
-  console.log('[Main] LLM key loaded:', llmKey ? `yes (${llmKey.slice(0, 6)}...)` : 'NO');
-  console.log('[Main] STT key loaded:', sttKey ? `yes (${sttKey.slice(0, 6)}...)` : 'NO');
+  console.log('[Main] LLM key:', llmKey ? `yes (${llmKey.slice(0, 6)}...)` : 'NO');
+  console.log('[Main] STT key:', sttKey ? `yes (${sttKey.slice(0, 6)}...)` : 'NO');
 
   engine = new Engine({
     dataDir: userDataPath,
@@ -100,121 +90,47 @@ function initEngine() {
     llmApiKey: llmKey,
   });
 
-  engine.on('engine-event', (event: EngineEvent) => {
-    mainWindow?.webContents.send('engine-event', event);
-  });
-
-  engine.on('tts-audio', (audioBuffer: Buffer) => {
-    mainWindow?.webContents.send('tts-audio', audioBuffer);
-  });
-
+  engine.on('engine-event', (event: EngineEvent) => mainWindow?.webContents.send('engine-event', event));
+  engine.on('tts-audio', (buf: Buffer) => mainWindow?.webContents.send('tts-audio', buf));
   engine.start().catch(console.error);
 }
 
 function setupIPC() {
-  // Wake word detected by OpenWakeWord in renderer → trigger engine
-  ipcMain.on('wake-word-detected', (_event, keyword: string, score: number) => {
-    console.log(`[Main] Wake word: "${keyword}" (score: ${score.toFixed(2)})`);
+  ipcMain.on('wake-word-detected', (_e, keyword: string, score: number) => {
+    console.log(`[Main] Wake: "${keyword}" score=${score.toFixed(2)}`);
     engine?.triggerListening();
   });
+  ipcMain.on('process-audio', async (_e, buf: ArrayBuffer) => engine?.processAudio(buf));
 
-  // Audio from renderer (recorded via MediaRecorder after wake word)
-  ipcMain.on('process-audio', async (_event, audioBuf: ArrayBuffer) => {
-    await engine?.processAudio(audioBuf);
-  });
-
-  ipcMain.handle('get-status', () => {
-    return { state: engine?.getState() || 'idle' };
-  });
-
-  ipcMain.handle('get-settings', () => {
-    return engine?.getStore().getSettings();
-  });
-
-  ipcMain.handle('save-settings', (_event, settings) => {
-    engine?.getStore().saveSettings(settings);
-    return { success: true };
-  });
-
-  ipcMain.handle('get-enrollment-status', () => {
-    return engine?.getStore().getEnrollmentStatus();
-  });
+  ipcMain.handle('get-status', () => ({ state: engine?.getState() || 'idle' }));
+  ipcMain.handle('get-settings', () => engine?.getStore().getSettings());
+  ipcMain.handle('save-settings', (_e, s) => { engine?.getStore().saveSettings(s); return { success: true }; });
+  ipcMain.handle('get-enrollment-status', () => engine?.getStore().getEnrollmentStatus());
 
   ipcMain.handle('start-enrollment', () => {
     const enroller = engine?.getSpeakerEnroller();
     if (!enroller) return { success: false, message: '引擎未初始化' };
-
-    const phrases = [
-      '生活不止眼前的苟且',
-      '还有诗和远方的田野',
-      '人工智能改变世界',
-      '你好我是桌面助手',
-      '请验证我的声音',
-    ];
-
-    enroller.setPhrases(phrases);
-    return { success: true, phrases };
+    enroller.setPhrases(['生活不止眼前的苟且', '还有诗和远方的田野', '人工智能改变世界', '你好我是桌面助手', '请验证我的声音']);
+    return { success: true, phrases: enroller.getPhrases() };
   });
 
-  ipcMain.handle('submit-enrollment-audio', async (_event, phraseIndex: number, audioBase64: string) => {
+  ipcMain.handle('submit-enrollment-audio', async (_e, idx: number, b64: string) => {
     const enroller = engine?.getSpeakerEnroller();
     if (!enroller) return { success: false };
-
-    const audioBuffer = Buffer.from(audioBase64, 'base64');
-    await enroller.submitAudio(phraseIndex, audioBuffer);
-
+    await enroller.submitAudio(idx, Buffer.from(b64, 'base64'));
     if (enroller.isComplete()) {
-      const embedding = enroller.getEmbedding();
-      if (embedding) {
-        engine?.getStore().saveSpeakerEmbedding(embedding);
-        engine?.getStore().setEnrollmentStatus({
-          enrolled: true,
-          enrolledAt: new Date().toISOString(),
-          phraseCount: enroller.getPhrases().length,
-        });
-      }
+      const emb = enroller.getEmbedding();
+      if (emb) { engine?.getStore().saveSpeakerEmbedding(emb); engine?.getStore().setEnrollmentStatus({ enrolled: true, enrolledAt: new Date().toISOString(), phraseCount: enroller.getPhrases().length }); }
     }
-
     return { success: true, progress: enroller.getProgress(), complete: enroller.isComplete() };
   });
 }
-
-// Disable disk cache to avoid write errors
-app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
-app.commandLine.appendSwitch('disable-http-cache');
 
 app.whenReady().then(() => {
   setupIPC();
   createWindow();
   createTray();
   initEngine();
-
-  // Grant microphone permission on this window
-  mainWindow?.webContents.session.setPermissionRequestHandler(
-    (_wc: Electron.WebContents, permission: string, callback: (granted: boolean) => void, details: { mediaTypes?: string[] }) => {
-      if (permission === 'media' && details.mediaTypes?.includes('audio')) {
-        callback(true);
-      } else if (permission === 'media') {
-        callback(true);  // Grant all media for simplicity
-      } else {
-        callback(false);
-      }
-    }
-  );
-
-  // Also pre-grant via default session
-  const { session } = require('electron');
-  session.defaultSession.setPermissionRequestHandler(
-    (_wc: Electron.WebContents, permission: string, callback: (granted: boolean) => void) => {
-      callback(permission === 'media');
-    }
-  );
 });
 
-app.on('window-all-closed', () => {
-  // Don't quit on Windows
-});
-
-app.on('before-quit', () => {
-  engine?.stop();
-});
+app.on('before-quit', () => engine?.stop());

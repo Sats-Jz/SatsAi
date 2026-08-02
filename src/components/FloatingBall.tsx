@@ -34,23 +34,27 @@ export default function FloatingBall() {
       const chunks: Blob[] = [];
       mr.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
 
-      mr.onstop = () => {
-        cleanup();
-        setRecording(false);
-        setCountdown(0);
+      mr.onstop = async () => {
+        cleanup(); setRecording(false); setCountdown(0);
         const blob = new Blob(chunks);
         if (blob.size < 200) return;
-        // Send raw WebM bytes — engine decodes with prism-media (pure JS, no AudioContext)
-        blob.arrayBuffer().then((buf) => window.electronAPI?.processAudio(buf));
+
+        // WebM → PCM via Web Audio API. Permissions are pre-granted.
+        const arrayBuf = await blob.arrayBuffer();
+        const ctx = new AudioContext({ sampleRate: 16000 });
+        const audioBuffer = await ctx.decodeAudioData(arrayBuf);
+        ctx.close();
+
+        const channel = audioBuffer.getChannelData(0);
+        const pcm = new Int16Array(channel.length);
+        for (let i = 0; i < channel.length; i++) pcm[i] = Math.round(channel[i] * 32767);
+        window.electronAPI?.processAudio(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength));
       };
 
       mr.start();
       setRecording(true);
       setCountdown(8);
-      timerRef.current = setInterval(() => setCountdown((p) => {
-        if (p <= 1) { mrRef.current?.stop(); return 0; }
-        return p - 1;
-      }), 1000);
+      timerRef.current = setInterval(() => setCountdown((p) => (p <= 1 ? (mrRef.current?.stop(), 0) : p - 1)), 1000);
     } catch (e) { console.error('[Ball]', e); cleanup(); setRecording(false); }
   }, [cleanup]);
 
@@ -62,7 +66,6 @@ export default function FloatingBall() {
   const face = recording || voiceState === 'listening' ? '\u{1F3A4}'
     : voiceState === 'thinking' ? '\u{1F914}'
     : voiceState === 'speaking' ? '\u{1F4AC}' : '\u{1F60A}';
-
   const cls = recording || voiceState === 'listening' ? 'ball-listening'
     : voiceState === 'thinking' ? 'ball-thinking'
     : voiceState === 'speaking' ? 'ball-speaking' : 'ball-idle';
