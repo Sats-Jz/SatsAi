@@ -82,12 +82,15 @@ export class Engine extends EventEmitter {
    * The renderer did wake word + VAD + WebM→WAV conversion.
    */
   async processAudio(wavBase64: string): Promise<void> {
+    console.log('[Engine] Received audio from renderer, length:', wavBase64.length);
     const audioBuffer = Buffer.from(wavBase64, 'base64');
     await this.handleSpeechEnd(audioBuffer);
   }
 
   private async handleSpeechEnd(wavBuffer: Buffer): Promise<void> {
+    console.log('[Engine] Processing audio buffer:', wavBuffer.length, 'bytes');
     if (wavBuffer.length < 1000) {
+      console.log('[Engine] Audio too short, skipping');
       this.stateMachine.onError('语音太短');
       return;
     }
@@ -112,7 +115,9 @@ export class Engine extends EventEmitter {
 
     try {
       // STT: audio is already WAV PCM 16kHz mono from renderer
+      console.log('[Engine] Sending to STT...');
       const sttResult = await this.sttClient.transcribe(wavBuffer);
+      console.log('[Engine] STT result:', sttResult.text);
       this.emit('engine-event', {
         type: 'transcript',
         text: sttResult.text,
