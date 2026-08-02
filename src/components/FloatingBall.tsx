@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAppStore } from '../stores/appStore';
-import { webmToPcm } from '../utils/audio';
 import WaveAnimation from './WaveAnimation';
 import './FloatingBall.css';
 
@@ -14,65 +13,85 @@ export default function FloatingBall() {
   const [recording, setRecording] = useState(false);
   const [countdown, setCountdown] = useState(0);
 
-  const mrRef = useRef<MediaRecorder | null>(null);
+  const ctxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval>>();
+  const chunks = useRef<Int16Array[]>([]);
 
   const cleanup = useCallback(() => {
     clearInterval(timerRef.current);
+    ctxRef.current?.close();
+    ctxRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
-    mrRef.current = null;
   }, []);
 
   useEffect(() => cleanup, [cleanup]);
 
   const wake = useCallback(async () => {
-    if (mrRef.current?.state === 'recording') return;
+    if (ctxRef.current) return; // Already recording
     window.electronAPI?.wakeWordDetected('manual', 1.0);
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { sampleRate: 16000, channelCount: 1 },
+        audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
       streamRef.current = stream;
 
-      const mr = new MediaRecorder(stream, {
-        mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-          ? 'audio/webm;codecs=opus' : 'audio/webm',
-      });
-      mrRef.current = mr;
+      // Use ScriptProcessor to capture raw PCM — NO MediaRecorder, NO WebM, NO decode
+      const ctx = new AudioContext({ sampleRate: 16000 });
+      ctxRef.current = ctx;
+      const source = ctx.createMediaStreamSource(stream);
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      chunks.current = [];
 
-      const chunks: Blob[] = [];
-      mr.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-
-      mr.onstop = async () => {
-        setRecording(false);
-        setCountdown(0);
-        cleanup();
-        const blob = new Blob(chunks, { type: 'audio/webm' });
-        if (blob.size < 200) return;
-
-        try {
-          // Decode WebM → WAV PCM in renderer, send raw PCM via IPC
-          const pcm = await webmToPcm(blob);
-          window.electronAPI?.processAudio(pcm);
-        } catch (err) {
-          console.error('[Ball] Decode error:', err);
+      processor.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        // Convert Float32 → Int16
+        const int16 = new Int16Array(input.length);
+        for (let i = 0; i < input.length; i++) {
+          int16[i] = Math.max(-32768, Math.min(32767, Math.round(input[i] * 32767)));
         }
+        chunks.current.push(int16);
       };
 
-      mr.start();
+      source.connect(processor);
+      processor.connect(ctx.destination);
       setRecording(true);
       setCountdown(Math.ceil(RECORD_MS / 1000));
 
       timerRef.current = setInterval(() => {
         setCountdown((prev) => {
-          if (prev <= 1) { mrRef.current?.stop(); return 0; }
+          if (prev <= 1) {
+            // Stop recording
+            source.disconnect();
+            processor.disconnect();
+            cleanup();
+            setRecording(false);
+
+            // Merge all Int16 chunks → one ArrayBuffer
+            const totalLen = chunks.current.reduce((s, c) => s + c.length, 0);
+            if (totalLen < 1000) return 0; // too short
+
+            const merged = new Int16Array(totalLen);
+            let off = 0;
+            for (const c of chunks.current) {
+              merged.set(c, off);
+              off += c.length;
+            }
+            // Send raw 16-bit PCM via IPC
+            window.electronAPI?.processAudio(merged.buffer.slice(merged.byteOffset, merged.byteOffset + merged.byteLength));
+
+            return 0;
+          }
           return prev - 1;
         });
       }, 1000);
-    } catch (err) { console.error('[Ball] Mic failed:', err); cleanup(); }
+    } catch (err) {
+      console.error('[Ball] Mic failed:', err);
+      cleanup();
+      setRecording(false);
+    }
   }, [cleanup]);
 
   useEffect(() => {
