@@ -12,6 +12,7 @@ import { systemActions } from './actions/system';
 import { webActions } from './actions/web';
 import { MCPClientManager } from './mcp/client';
 import { MCPToolRegistry } from './mcp/registry';
+import { webmToPcm } from './audio';
 import { AppStore } from './store';
 import type { EngineEvent, DialogState } from './types';
 
@@ -82,15 +83,21 @@ export class Engine extends EventEmitter {
     this.setState('listening');
   }
 
-  /** Process audio from renderer (raw WebM bytes — STT handles format) */
+  /** Process audio from renderer (raw WebM bytes) */
   async processAudio(raw: Buffer | ArrayBuffer): Promise<void> {
     if (this.busy) return;
     this.busy = true;
     try {
-      const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
-      console.log('[Engine] Audio:', buf.length, 'bytes');
-      if (buf.length < 500) { this[emit]('error', { message: '语音太短' }); this.setState('idle'); return; }
-      await this.runPipeline(buf);
+      const webm = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+      console.log('[Engine] WebM:', webm.length, 'bytes');
+      if (webm.length < 500) { this[emit]('error', { message: '语音太短' }); this.setState('idle'); return; }
+
+      // Decode WebM/Opus → PCM in main process (pure JS, prism-media + opusscript)
+      const pcm = await webmToPcm(webm);
+      console.log('[Engine] PCM:', pcm.length, 'bytes');
+      if (pcm.length < 500) { this[emit]('error', { message: '语音太短' }); this.setState('idle'); return; }
+
+      await this.runPipeline(pcm);
     } catch (err) {
       this[emit]('error', { message: (err as Error).message });
       this.setState('idle');
