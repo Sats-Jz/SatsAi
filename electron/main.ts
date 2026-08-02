@@ -10,13 +10,6 @@ let engine: Engine | null = null;
 const isDev = !app.isPackaged;
 let isQuitting = false;
 
-// Fix "Failed to save user data" by using project-local cache dir
-if (isDev) {
-  const userDataPath = path.join(__dirname, '..', '.electron-cache');
-  app.setPath('userData', userDataPath);
-  app.setPath('cache', path.join(userDataPath, 'Cache'));
-}
-
 function createWindow() {
   const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
   const winW = 200;
@@ -174,6 +167,10 @@ function setupIPC() {
     return { success: true, progress: enroller.getProgress(), complete: enroller.isComplete() };
   });
 }
+
+// Disable disk cache to avoid write errors
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+app.commandLine.appendSwitch('disable-http-cache');
 
 app.whenReady().then(() => {
   setupIPC();
