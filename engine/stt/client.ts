@@ -1,5 +1,4 @@
 import type { STTResult } from '../types';
-import WebSocket from 'ws';
 
 export type STTProvider = 'qwen' | 'openai' | 'groq';
 
@@ -13,7 +12,7 @@ export interface STTConfig {
 const CONFIG: Record<STTProvider, { baseUrl: string; defaultModel: string }> = {
   openai: { baseUrl: 'https://api.openai.com/v1', defaultModel: 'whisper-1' },
   groq: { baseUrl: 'https://api.groq.com/openai/v1', defaultModel: 'whisper-large-v3-turbo' },
-  qwen: { baseUrl: 'wss://dashscope.aliyuncs.com/api-ws/v1/inference', defaultModel: 'paraformer-realtime-v2' },
+  qwen: { baseUrl: 'https://dashscope.aliyuncs.com/api/v1', defaultModel: 'paraformer-v2' },
 };
 
 export class STTClient {
@@ -24,10 +23,9 @@ export class STTClient {
     this.config = { ...config, model: config.model || pc.defaultModel, baseUrl: pc.baseUrl };
   }
 
-  /** Transcribe PCM audio. Qwen: WebSocket. OpenAI/Groq: HTTP. */
   async transcribe(pcmBuffer: Buffer): Promise<STTResult> {
     if (this.config.provider === 'qwen') {
-      return this.transcribeQwenWS(pcmBuffer);
+      return this.transcribeQwen(pcmBuffer);
     }
     return this.transcribeHTTP(pcmBuffer);
   }
@@ -46,57 +44,73 @@ export class STTClient {
     return { text: d.text || '', language: this.config.language || 'unknown', confidence: 0.95 };
   }
 
-  /** Qwen real-time WebSocket: raw PCM in, text out */
-  private transcribeQwenWS(pcm: Buffer): Promise<STTResult> {
-    return new Promise((resolve, reject) => {
-      const tid = `satsai-${Date.now()}`;
-      let done = false;
-      const texts: string[] = [];
+  /** Qwen DashScope async file transcription: upload WAV → submit task → poll */
+  private async transcribeQwen(pcm: Buffer): Promise<STTResult> {
+    // Write WAV to temp file and use data URL
+    const wav = STTClient.pcmToWav(pcm);
+    // Use compatible-mode HTTP endpoint which handles WAV uploads
+    try {
+      const fd = new FormData();
+      fd.append('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'audio.wav');
+      fd.append('model', 'paraformer-v2');
+      const r = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/audio/transcriptions', {
+        method: 'POST', headers: { Authorization: `Bearer ${this.config.apiKey}` }, body: fd,
+      });
+      if (r.ok) {
+        const d = (await r.json()) as { text: string };
+        return { text: d.text || '', language: 'zh', confidence: 0.95 };
+      }
+      console.log('[STT] Compatible-mode failed:', r.status, await r.text().then(t => t.slice(0, 200)));
+    } catch (e) {
+      console.log('[STT] Compatible-mode exception:', (e as Error).message);
+    }
 
-      const ws = new WebSocket(this.config.baseUrl, {
+    // Fallback: DashScope native async API with data URL
+    const b64 = wav.toString('base64');
+    const dataUrl = `data:audio/wav;base64,${b64}`;
+
+    const submitR = await fetch(`${this.config.baseUrl}/services/audio/asr/transcription`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.config.apiKey}`,
+        'Content-Type': 'application/json',
+        'X-DashScope-Async': 'enable',
+      },
+      body: JSON.stringify({
+        model: this.config.model,
+        input: { file_urls: [dataUrl] },
+        parameters: { language_hints: this.config.language ? [this.config.language] : undefined },
+      }),
+    });
+
+    if (!submitR.ok) {
+      const err = await submitR.text();
+      throw new Error(`Qwen submit failed (${submitR.status}): ${err.slice(0, 300)}`);
+    }
+
+    const task = (await submitR.json()) as { output?: { task_id?: string }; request_id?: string };
+    const tid = task.output?.task_id;
+    console.log('[STT] Qwen task submitted:', tid);
+
+    // Poll
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      const pr = await fetch(`${this.config.baseUrl}/tasks/${tid}`, {
         headers: { Authorization: `Bearer ${this.config.apiKey}` },
       });
-
-      const finish = (result: STTResult | Error) => {
-        if (done) return; done = true;
-        try { ws.close(); } catch {}
-        if (result instanceof Error) reject(result); else resolve(result);
+      const pd = (await pr.json()) as {
+        output?: { task_status?: string; results?: Array<{ sentences?: Array<{ text: string }> }> };
       };
-
-      setTimeout(() => finish(new Error('Qwen WS timeout')), 30000);
-
-      ws.on('open', () => {
-        ws.send(JSON.stringify({
-          header: { task_id: tid, task_group: 'audio', task: 'asr', function: 'recognition', model: this.config.model, action: 'run-task' },
-          payload: { task_group: 'audio', task: 'asr', function: 'recognition', model: this.config.model, input: {}, parameters: { format: 'pcm', sample_rate: 16000 } },
-        }));
-        // Send PCM in chunks
-        let off = 0;
-        while (off < pcm.length) { ws.send(pcm.subarray(off, off + 3200)); off += 3200; }
-        ws.send(JSON.stringify({
-          header: { task_id: tid, task_group: 'audio', task: 'asr', function: 'recognition', action: 'finish-task' },
-          payload: { task_group: 'audio', task: 'asr', function: 'recognition', model: this.config.model },
-        }));
-      });
-
-      ws.on('message', (data: WebSocket.Data) => {
-        try {
-          const msg = JSON.parse(data.toString());
-          if (msg.header?.event === 'result-generated') {
-            texts.push(msg.payload?.output?.text || '');
-          }
-          if (msg.header?.event === 'task-finished') {
-            finish({ text: texts.join(''), language: 'zh', confidence: 0.95 });
-          }
-          if (msg.header?.event === 'task-failed') {
-            finish(new Error(`Qwen WS failed: ${JSON.stringify(msg).slice(0, 200)}`));
-          }
-        } catch {}
-      });
-
-      ws.on('error', (e: Error) => finish(new Error(`Qwen WS: ${e.message}`)));
-      ws.on('close', () => { if (!done) finish(new Error('Qwen WS closed unexpectedly')); });
-    });
+      const status = pd.output?.task_status;
+      if (status === 'SUCCEEDED') {
+        const text = pd.output?.results?.[0]?.sentences?.map(s => s.text).join('') || '';
+        return { text, language: 'zh', confidence: 0.95 };
+      }
+      if (status === 'FAILED') {
+        throw new Error(`Qwen task FAILED: ${JSON.stringify(pd.output).slice(0, 300)}`);
+      }
+    }
+    throw new Error('Qwen: polling timeout (30s)');
   }
 
   static pcmToWav(pcm: Buffer, sr = 16000): Buffer {
