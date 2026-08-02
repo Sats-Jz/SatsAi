@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAppStore } from '../stores/appStore';
-import { useDrag } from '../hooks/useDrag';
 import { webmBlobToWavBase64 } from '../utils/audio';
 import WaveAnimation from './WaveAnimation';
 import './FloatingBall.css';
@@ -9,23 +8,17 @@ const RECORD_MS = 8000;
 
 export default function FloatingBall() {
   const voiceState = useAppStore((s) => s.voiceState);
+  const response = useAppStore((s) => s.response);
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
   const setEnrollmentOpen = useAppStore((s) => s.setEnrollmentOpen);
   const [showMenu, setShowMenu] = useState(false);
   const [recording, setRecording] = useState(false);
   const [countdown, setCountdown] = useState(0);
-  const voiceRef = useRef(voiceState);
-  voiceRef.current = voiceState;
 
   const mrRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval>>();
-
-  const { isDragging, position, onMouseDown } = useDrag(
-    window.screen.width - 140,
-    window.screen.height - 200
-  );
 
   const cleanup = useCallback(() => {
     clearInterval(timerRef.current);
@@ -36,11 +29,9 @@ export default function FloatingBall() {
 
   useEffect(() => cleanup, [cleanup]);
 
-  /** Start mic + notify engine */
   const wake = useCallback(async () => {
-    if (recording) return;
+    if (mrRef.current?.state === 'recording') return;
 
-    // Notify engine
     window.electronAPI?.wakeWordDetected('manual', 1.0);
 
     try {
@@ -65,12 +56,12 @@ export default function FloatingBall() {
         setCountdown(0);
         cleanup();
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-        if (blob.size < 400) return; // too short
+        if (blob.size < 400) return;
         try {
           const wav = await webmBlobToWavBase64(blob);
           window.electronAPI?.processAudio(wav);
         } catch (err) {
-          console.error('[FloatingBall] Convert error:', err);
+          console.error('[Ball] Convert error:', err);
         }
       };
 
@@ -88,12 +79,12 @@ export default function FloatingBall() {
         });
       }, 1000);
     } catch (err) {
-      console.error('[FloatingBall] Mic failed:', err);
+      console.error('[Ball] Mic failed:', err);
       cleanup();
     }
-  }, [recording, cleanup]);
+  }, [cleanup]);
 
-  // Tray "wake" → start recording
+  // Tray wake
   useEffect(() => {
     window.electronAPI?.onStartListening(() => wake());
     return () => window.electronAPI?.removeAllListeners('start-listening');
@@ -110,21 +101,19 @@ export default function FloatingBall() {
     isSpeaking ? '\u{1F4AC}' :
     '\u{1F60A}';
 
-  const statusClass = recording ? 'ball-listening' :
-    isListening ? 'ball-listening' :
-    isThinking ? 'ball-thinking' :
-    isSpeaking ? 'ball-speaking' :
-    'ball-idle';
+  const statusClass = recording ? 'listening' :
+    isListening ? 'listening' :
+    isThinking ? 'thinking' :
+    isSpeaking ? 'speaking' :
+    'idle';
 
   return (
-    <div
-      className={`floating-ball ${statusClass} ${isDragging ? 'dragging' : ''}`}
-      style={{ left: position.x, top: position.y }}
-      onMouseDown={onMouseDown}
-      onDoubleClick={wake}
-      onContextMenu={(e) => { e.preventDefault(); setShowMenu(!showMenu); }}
-    >
-      <div className="ball-body">
+    <div className="ball-wrapper">
+      <div
+        className={`ball-body ball-${statusClass}`}
+        onDoubleClick={wake}
+        onContextMenu={(e) => { e.preventDefault(); setShowMenu(!showMenu); }}
+      >
         <div className="ball-face">{face}</div>
         {recording && <div className="countdown-badge">{countdown}s</div>}
         {isListening && <WaveAnimation />}
@@ -137,6 +126,13 @@ export default function FloatingBall() {
           <div className="menu-item" onClick={() => { setEnrollmentOpen(true); setShowMenu(false); }}>Voice ID</div>
           <div className="menu-separator" />
           <div className="menu-item" onClick={() => setShowMenu(false)}>Exit</div>
+        </div>
+      )}
+
+      {/* DialogBubble inline */}
+      {isSpeaking && response && (
+        <div className="dialog-bubble-inline">
+          <div className="response-text">{response}</div>
         </div>
       )}
     </div>
