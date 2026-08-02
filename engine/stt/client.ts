@@ -1,37 +1,49 @@
+/**
+ * Qwen Real-time Speech Recognition via Aliyun NLS SDK.
+ * npm: alibabacloud-nls | docs: https://help.aliyun.com/zh/isi/developer-reference/sdk-for-node-js
+ *
+ * Requirements: appkey (from NLS console) + token (your DashScope API key works)
+ */
 import type { STTResult } from '../types';
-import WebSocket from 'ws';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let Nls: any = null;
 
 export type STTProvider = 'qwen' | 'openai' | 'groq';
 
 export interface STTConfig {
   provider: STTProvider;
-  apiKey: string;
+  apiKey: string;    // DashScope API key (used as token)
+  appkey: string;    // NLS project appkey
   model?: string;
   language?: string;
 }
 
+// Singleton: one WebSocket connection reused
+let cachedAppkey = '';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let cachedClient: any = null;
+
 export class STTClient {
-  private config: STTConfig & { model: string };
+  private config: STTConfig;
 
   constructor(config: STTConfig) {
-    this.config = {
-      model: config.provider === 'qwen' ? 'paraformer-realtime-v2' : 'whisper-1',
-      language: 'zh',
-      ...config,
-    };
+    this.config = { language: 'zh', ...config };
   }
 
   async transcribe(pcm: Buffer): Promise<STTResult> {
-    if (this.config.provider === 'qwen') return this.qwenWS(pcm);
-    return this.httpTranscribe(pcm);
+    if (this.config.provider !== 'qwen') {
+      return this.transcribeHTTP(pcm);
+    }
+    return this.transcribeNLS(pcm);
   }
 
-  private async httpTranscribe(pcm: Buffer): Promise<STTResult> {
+  /** OpenAI / Groq — HTTP multipart */
+  private async transcribeHTTP(pcm: Buffer): Promise<STTResult> {
     const wav = STTClient.pcm2wav(pcm);
     const fd = new FormData();
     fd.append('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'audio.wav');
-    fd.append('model', this.config.model);
-    if (this.config.language) fd.append('language', this.config.language);
+    fd.append('model', this.config.model || 'whisper-1');
     const base = this.config.provider === 'groq' ? 'https://api.groq.com/openai/v1' : 'https://api.openai.com/v1';
     const r = await fetch(`${base}/audio/transcriptions`, {
       method: 'POST', headers: { Authorization: `Bearer ${this.config.apiKey}` }, body: fd,
@@ -41,38 +53,80 @@ export class STTClient {
     return { text: d.text || '', language: 'unknown', confidence: 0.95 };
   }
 
-  private qwenWS(pcm: Buffer): Promise<STTResult> {
-    return new Promise((resolve, reject) => {
-      const tid = `s-${Date.now()}`;
-      let done = false;
-      const texts: string[] = [];
-      const ws = new WebSocket('wss://dashscope.aliyuncs.com/api-ws/v1/inference', {
-        headers: { Authorization: `Bearer ${this.config.apiKey}` },
-      });
-      const end = (r: STTResult | Error) => { if (done) return; done = true; try { ws.close(); } catch {} if (r instanceof Error) reject(r); else resolve(r); };
-      setTimeout(() => end(new Error('WS timeout')), 20000);
+  /**
+   * Aliyun NLS real-time speech recognition.
+   * AppKey from NLS console project + token (your DashScope API Key).
+   */
+  private transcribeNLS(pcm: Buffer): Promise<STTResult> {
+    return new Promise(async (resolve, reject) => {
+      try {
+        if (!Nls) {
+          Nls = require('alibabacloud-nls');
+        }
 
-      ws.on('open', () => {
-        ws.send(JSON.stringify({
-          header: { task_id: tid, task_group: 'audio', task: 'asr', function: 'recognition', model: this.config.model, action: 'run-task' },
-          payload: { task_group: 'audio', task: 'asr', function: 'recognition', model: this.config.model, input: {}, parameters: { format: 'pcm', sample_rate: 16000 } },
-        }));
-        for (let i = 0; i < pcm.length; i += 3200) ws.send(pcm.subarray(i, i + 3200));
-        ws.send(JSON.stringify({
-          header: { task_id: tid, task_group: 'audio', task: 'asr', function: 'recognition', action: 'finish-task' },
-          payload: { task_group: 'audio', task: 'asr', function: 'recognition', model: this.config.model },
-        }));
-      });
+        // Reuse cached client for same appkey
+        if (cachedAppkey !== this.config.appkey) {
+          cachedAppkey = this.config.appkey;
+          cachedClient = null;
+        }
 
-      ws.on('message', (d: WebSocket.Data) => {
-        try {
-          const m = JSON.parse(d.toString());
-          if (m.header?.event === 'result-generated') texts.push(m.payload?.output?.text || '');
-          if (m.header?.event === 'task-finished') end({ text: texts.join(''), language: 'zh', confidence: 0.95 });
-          if (m.header?.event === 'task-failed') end(new Error('WS failed: ' + JSON.stringify(m).slice(0, 200)));
-        } catch {}
-      });
-      ws.on('error', (e: Error) => end(e));
+        if (!cachedClient) {
+          cachedClient = new Nls.SpeechTranscription({
+            url: 'wss://nls-gateway.cn-shanghai.aliyuncs.com/ws/v1',
+            appkey: this.config.appkey,
+            token: this.config.apiKey,  // DashScope API key works as token
+          });
+        }
+
+        const client = cachedClient;
+        const texts: string[] = [];
+
+        client.on('changed', (msg: unknown) => {
+          const m = msg as { payload?: { result?: string } };
+          const t = m.payload?.result || '';
+          if (t) texts.push(t);
+          console.log('[STT] Partial:', t);
+        });
+
+        client.on('completed', (msg: unknown) => {
+          console.log('[STT] Completed:', JSON.stringify(msg).slice(0, 200));
+        });
+
+        client.on('failed', (msg: unknown) => {
+          const err = new Error(`NLS failed: ${JSON.stringify(msg).slice(0, 300)}`);
+          reject(err);
+        });
+
+        client.on('closed', () => {
+          console.log('[STT] Connection closed');
+        });
+
+        // Start recognition
+        await client.start(client.defaultStartParams(), true, 6000);
+        console.log('[STT] NLS started, sending', pcm.length, 'bytes of PCM');
+
+        // Send audio in small chunks
+        const chunkSize = 3200;
+        for (let i = 0; i < pcm.length; i += chunkSize) {
+          const chunk = pcm.subarray(i, Math.min(i + chunkSize, pcm.length));
+          if (!client.sendAudio(chunk)) {
+            reject(new Error('sendAudio failed'));
+            return;
+          }
+          // Small delay to avoid flooding
+          await new Promise((r) => setTimeout(r, 20));
+        }
+
+        // Close to get final result
+        console.log('[STT] Closing NLS connection...');
+        await client.close();
+
+        const finalText = texts.join('');
+        console.log('[STT] Final text:', finalText || '(empty)');
+        resolve({ text: finalText, language: 'zh', confidence: 0.95 });
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 

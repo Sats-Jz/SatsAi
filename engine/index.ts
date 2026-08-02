@@ -12,12 +12,14 @@ import { systemActions } from './actions/system';
 import { webActions } from './actions/web';
 import { MCPClientManager } from './mcp/client';
 import { MCPToolRegistry } from './mcp/registry';
+import { webmToPcm } from './audio';
 import { AppStore } from './store';
 import type { EngineEvent, DialogState } from './types';
 
 export interface EngineConfig {
   dataDir: string;
   sttApiKey: string;
+  sttAppkey: string;
   sttProvider: 'qwen' | 'openai' | 'groq';
   llmProvider: 'deepseek' | 'openai' | 'qwen' | 'claude';
   llmApiKey: string;
@@ -47,7 +49,7 @@ export class Engine extends EventEmitter {
     this.speakerEnroller = new SpeakerEnroller();
     this.speakerVerifier = new SpeakerVerifier({ threshold: settings.speakerThreshold });
 
-    this.sttClient = new STTClient({ provider: config.sttProvider, apiKey: config.sttApiKey });
+    this.sttClient = new STTClient({ provider: config.sttProvider, apiKey: config.sttApiKey, appkey: config.sttAppkey });
     this.ttsClient = new TTSClient({ voice: settings.ttsVoice, rate: settings.ttsRate });
 
     this.actionRegistry = createActionRegistry();
@@ -82,15 +84,20 @@ export class Engine extends EventEmitter {
     this.setState('listening');
   }
 
-  /** Process raw Int16 PCM from renderer */
+  /** Process raw WebM bytes from renderer */
   async processAudio(raw: Buffer | ArrayBuffer): Promise<void> {
     if (this.busy) return;
     this.busy = true;
     try {
-      const pcm = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
-      console.log('[Engine] PCM:', pcm.length, 'bytes, first 10 Int16:',
-        [...Array(Math.min(10, Math.floor(pcm.length / 2)))].map((_, i) => pcm.readInt16LE(i * 2)).join(' '));
+      const webm = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+      console.log('[Engine] WebM:', webm.length, 'bytes');
+      if (webm.length < 500) { this[emit]('error', { message: '语音太短' }); this.setState('idle'); return; }
+
+      // Convert WebM → PCM via ffmpeg-static
+      const pcm = await webmToPcm(webm);
+      console.log('[Engine] PCM:', pcm.length, 'bytes');
       if (pcm.length < 1600) { this[emit]('error', { message: '语音太短' }); this.setState('idle'); return; }
+
       this.setState('thinking');
       await this.runPipeline(pcm);
     } catch (err) {

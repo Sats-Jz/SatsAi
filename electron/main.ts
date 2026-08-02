@@ -67,12 +67,15 @@ function initEngine() {
   const userDataPath = app.getPath('userData');
   const llmKey = process.env.SATSAI_LLM_API_KEY || '';
   const sttKey = process.env.SATSAI_STT_API_KEY || '';
-  console.log('[Main] LLM key:', llmKey ? `yes (${llmKey.slice(0, 6)}...)` : 'NO');
-  console.log('[Main] STT key:', sttKey ? `yes (${sttKey.slice(0, 6)}...)` : 'NO');
+  const sttAppkey = process.env.SATSAI_STT_APPKEY || '';
+  console.log('[Main] LLM:', llmKey ? `yes` : 'NO');
+  console.log('[Main] STT key:', sttKey ? `yes` : 'NO');
+  console.log('[Main] STT appkey:', sttAppkey || 'NO');
 
   engine = new Engine({
     dataDir: userDataPath,
     sttApiKey: sttKey,
+    sttAppkey: sttAppkey,
     sttProvider: (process.env.SATSAI_STT_PROVIDER as 'qwen' | 'openai') || 'qwen',
     llmProvider: (process.env.SATSAI_LLM_PROVIDER as 'deepseek' | 'openai' | 'qwen' | 'claude') || 'deepseek',
     llmApiKey: llmKey,
