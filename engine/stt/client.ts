@@ -33,15 +33,19 @@ export class STTClient {
     this.config = { ...config, model: config.model || pc.defaultModel, baseUrl: pc.baseUrl };
   }
 
+  /**
+   * Transcribe audio. Buffer is raw 16-bit PCM mono (16kHz).
+   * The renderer already decoded WebM → PCM.
+   */
   async transcribe(audioBuffer: Buffer): Promise<STTResult> {
     if (this.config.provider === 'qwen') {
-      // Qwen real-time API accepts raw PCM, not WAV
-      const pcmBuffer = STTClient.wavToPcm(audioBuffer);
-      return this.transcribeQwenRealtime(pcmBuffer);
+      // Qwen WS accepts raw PCM directly
+      return this.transcribeQwenRealtime(audioBuffer);
     }
-
-    // OpenAI / Groq: multipart upload with WAV
+    // OpenAI / Groq: transcribeOpenAI wraps raw PCM in WAV internally
     return this.transcribeOpenAI(audioBuffer);
+  }
+
   }
 
   /** OpenAI / Groq: HTTP multipart upload */

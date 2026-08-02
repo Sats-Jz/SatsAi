@@ -1,12 +1,19 @@
 /**
- * Read a Blob as ArrayBuffer using FileReader.
- * The result is passed directly to Electron IPC (no encoding overhead).
+ * Decode WebM/Opus → raw 16-bit PCM (16kHz mono).
+ * Returns Int16 PCM bytes — STTClient wraps in WAV header if needed.
  */
-export function blobToArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as ArrayBuffer);
-    reader.onerror = reject;
-    reader.readAsArrayBuffer(blob);
-  });
+export async function webmToPcm(blob: Blob): Promise<ArrayBuffer> {
+  const arrayBuffer = await blob.arrayBuffer();
+  const ctx = new AudioContext({ sampleRate: 16000 });
+  const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+  const channel = audioBuffer.getChannelData(0);
+  ctx.close();
+
+  const byteLen = channel.length * 2;
+  const buf = new ArrayBuffer(byteLen);
+  const view = new DataView(buf);
+  for (let i = 0; i < channel.length; i++) {
+    view.setInt16(i * 2, Math.max(-1, Math.min(1, channel[i])) * 0x7FFF, true);
+  }
+  return buf;
 }

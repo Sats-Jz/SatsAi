@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAppStore } from '../stores/appStore';
+import { webmToPcm } from '../utils/audio';
 import WaveAnimation from './WaveAnimation';
 import './FloatingBall.css';
 
@@ -45,18 +46,20 @@ export default function FloatingBall() {
       const chunks: Blob[] = [];
       mr.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
 
-      mr.onstop = () => {
+      mr.onstop = async () => {
         setRecording(false);
         setCountdown(0);
         cleanup();
         const blob = new Blob(chunks, { type: 'audio/webm' });
         if (blob.size < 200) return;
-        // Read raw bytes — NO decode, NO Web Audio API, NO string loop
-        const reader = new FileReader();
-        reader.onload = () => {
-          window.electronAPI?.processAudio(reader.result as ArrayBuffer);
-        };
-        reader.readAsArrayBuffer(blob);
+
+        try {
+          // Decode WebM → WAV PCM in renderer, send raw PCM via IPC
+          const pcm = await webmToPcm(blob);
+          window.electronAPI?.processAudio(pcm);
+        } catch (err) {
+          console.error('[Ball] Decode error:', err);
+        }
       };
 
       mr.start();
