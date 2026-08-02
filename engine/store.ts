@@ -1,4 +1,3 @@
-import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
@@ -13,7 +12,7 @@ const DEFAULT_SETTINGS = {
   llmProvider: 'deepseek' as const,
   llmApiKey: '',
   llmModel: 'deepseek-chat',
-  sttProvider: 'qwen' as const,  // 'qwen' (real-time WS) | 'groq' (free) | 'openai'
+  sttProvider: 'qwen' as const,
   autoStart: false,
   mcpFilesystem: false,
   mcpSqlite: false,
@@ -23,21 +22,39 @@ const DEFAULT_SETTINGS = {
 const ENCRYPTION_KEY = 'satsai-local-store-key-v1';
 const IV_LENGTH = 16;
 
+/** Pure-JS key-value store using encrypted JSON files. No native modules. */
 export class AppStore {
-  private db: Database.Database;
   private dataDir: string;
+  private cache: Record<string, string> = {};
 
   constructor(dataDir: string) {
     this.dataDir = dataDir;
     fs.mkdirSync(dataDir, { recursive: true });
-    const dbPath = path.join(dataDir, 'satsai.db');
-    this.db = new Database(dbPath);
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS kv_store (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      )
-    `);
+    this.load();
+  }
+
+  private filePath(): string {
+    return path.join(this.dataDir, 'satsai.json');
+  }
+
+  private load(): void {
+    try {
+      const raw = fs.readFileSync(this.filePath(), 'utf-8');
+      const encrypted = JSON.parse(raw);
+      for (const [key, value] of Object.entries(encrypted)) {
+        this.cache[key] = this.decrypt(value as string);
+      }
+    } catch {
+      // File doesn't exist or can't be read — use empty cache
+    }
+  }
+
+  private save(): void {
+    const encrypted: Record<string, string> = {};
+    for (const [key, value] of Object.entries(this.cache)) {
+      encrypted[key] = this.encrypt(value);
+    }
+    fs.writeFileSync(this.filePath(), JSON.stringify(encrypted), 'utf-8');
   }
 
   private encrypt(data: string): string {
@@ -67,17 +84,17 @@ export class AppStore {
   }
 
   private get(key: string): string | null {
-    const row = this.db.prepare('SELECT value FROM kv_store WHERE key = ?').get(key) as { value: string } | undefined;
-    return row ? this.decrypt(row.value) : null;
+    return this.cache[key] || null;
   }
 
   private set(key: string, value: string): void {
-    const encrypted = this.encrypt(value);
-    this.db.prepare('INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)').run(key, encrypted);
+    this.cache[key] = value;
+    this.save();
   }
 
   private remove(key: string): void {
-    this.db.prepare('DELETE FROM kv_store WHERE key = ?').run(key);
+    delete this.cache[key];
+    this.save();
   }
 
   getSettings() {
@@ -117,6 +134,6 @@ export class AppStore {
   }
 
   close(): void {
-    this.db.close();
+    // No-op for JSON store — data is saved on every write
   }
 }
