@@ -132,12 +132,12 @@ function setupIPC() {
     return { success: true, phrases };
   });
 
-  ipcMain.handle('submit-enrollment-audio', (_event, phraseIndex: number, audioBase64: string) => {
+  ipcMain.handle('submit-enrollment-audio', async (_event, phraseIndex: number, audioBase64: string) => {
     const enroller = engine?.getSpeakerEnroller();
     if (!enroller) return { success: false };
 
     const audioBuffer = Buffer.from(audioBase64, 'base64');
-    enroller.submitAudio(phraseIndex, audioBuffer);
+    await enroller.submitAudio(phraseIndex, audioBuffer);
 
     if (enroller.isComplete()) {
       const embedding = enroller.getEmbedding();

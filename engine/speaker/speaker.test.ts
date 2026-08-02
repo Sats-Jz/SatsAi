@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { SpeakerEnroller } from './enroll';
 import { SpeakerVerifier } from './verify';
+import { MockSpeakerModel } from './model';
 
 describe('SpeakerEnroller', () => {
   let enroller: SpeakerEnroller;
 
   beforeEach(() => {
-    enroller = new SpeakerEnroller();
+    enroller = new SpeakerEnroller(new MockSpeakerModel());
   });
 
   it('should create enroller with empty phrases', () => {
@@ -21,27 +22,27 @@ describe('SpeakerEnroller', () => {
     expect(enroller.getProgress()).toBe(0);
   });
 
-  it('should process audio buffers and accumulate embeddings', () => {
+  it('should process audio buffers and accumulate embeddings', async () => {
     enroller.setPhrases(['测试短语一', '测试短语二', '测试短语三']);
     const audioBuffer = Buffer.alloc(16000 * 2);
-    enroller.submitAudio(0, audioBuffer);
+    await enroller.submitAudio(0, audioBuffer);
     expect(enroller.getProgress()).toBe(1);
-    enroller.submitAudio(1, audioBuffer);
+    await enroller.submitAudio(1, audioBuffer);
     expect(enroller.getProgress()).toBe(2);
-    enroller.submitAudio(2, audioBuffer);
+    await enroller.submitAudio(2, audioBuffer);
     expect(enroller.getProgress()).toBe(3);
     expect(enroller.isComplete()).toBe(true);
     expect(enroller.getEmbedding()).not.toBeNull();
   });
 
-  it('should throw on invalid phrase index', () => {
+  it('should throw on invalid phrase index', async () => {
     enroller.setPhrases(['短语一']);
-    expect(() => enroller.submitAudio(5, Buffer.alloc(100))).toThrow('Invalid phrase index');
+    await expect(enroller.submitAudio(5, Buffer.alloc(100))).rejects.toThrow('Invalid phrase index');
   });
 
-  it('should reset enroller', () => {
+  it('should reset enroller', async () => {
     enroller.setPhrases(['一', '二']);
-    enroller.submitAudio(0, Buffer.alloc(100));
+    await enroller.submitAudio(0, Buffer.alloc(100));
     enroller.reset();
     expect(enroller.getProgress()).toBe(0);
     expect(enroller.isComplete()).toBe(false);

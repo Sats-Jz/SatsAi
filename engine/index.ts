@@ -92,20 +92,20 @@ export class Engine extends EventEmitter {
       return;
     }
 
-    // Speaker verification
-    const enrolled = this.store.getSpeakerEmbedding();
-    if (enrolled) {
-      // For now: skip actual verification until ONNX model is integrated
-      // In production: extract real embedding and compare
-      const verifyResult = {
-        passed: true,
-        score: 0.95,
-        threshold: this.store.getSettings().speakerThreshold,
-      };
+    // Speaker verification — real embedding extraction + cosine comparison
+    const enrolledEmb = this.store.getSpeakerEmbedding();
+    if (enrolledEmb) {
+      const model = this.speakerEnroller.getModel();
+      const liveEmb = await model.extractEmbedding(wavBuffer);
+      const verifyResult = this.speakerVerifier.verify(enrolledEmb, liveEmb);
       this.emit('engine-event', {
         type: 'verification-result',
         result: verifyResult,
       } as EngineEvent);
+      if (!verifyResult.passed) {
+        this.stateMachine.onError('声纹验证失败');
+        return;
+      }
     }
 
     this.stateMachine.onSpeechEnd(wavBuffer);

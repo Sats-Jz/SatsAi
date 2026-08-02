@@ -1,7 +1,25 @@
+import type { SpeakerModel } from './model';
+import { MockSpeakerModel } from './model';
+
 export class SpeakerEnroller {
   private phrases: string[] = [];
   private embeddings: Float32Array[] = [];
   private processedIndices: Set<number> = new Set();
+  private model: SpeakerModel;
+
+  constructor(model?: SpeakerModel) {
+    this.model = model || new MockSpeakerModel();
+  }
+
+  /** Replace the embedding model (e.g., with ONNXSpeakerModel). */
+  setModel(model: SpeakerModel): void {
+    this.model = model;
+  }
+
+  /** Get the current model (used by Engine for live verification). */
+  getModel(): SpeakerModel {
+    return this.model;
+  }
 
   setPhrases(phrases: string[]): void {
     this.phrases = phrases;
@@ -11,13 +29,15 @@ export class SpeakerEnroller {
 
   getPhrases(): string[] { return this.phrases; }
   getProgress(): number { return this.processedIndices.size; }
-  isComplete(): boolean { return this.processedIndices.size === this.phrases.length && this.phrases.length > 0; }
+  isComplete(): boolean {
+    return this.processedIndices.size === this.phrases.length && this.phrases.length > 0;
+  }
 
-  submitAudio(phraseIndex: number, audioBuffer: Buffer): void {
+  async submitAudio(phraseIndex: number, audioBuffer: Buffer): Promise<void> {
     if (phraseIndex < 0 || phraseIndex >= this.phrases.length) {
       throw new Error(`Invalid phrase index: ${phraseIndex}`);
     }
-    const embedding = this.extractEmbedding(audioBuffer);
+    const embedding = await this.model.extractEmbedding(audioBuffer);
     this.embeddings.push(embedding);
     this.processedIndices.add(phraseIndex);
   }
@@ -30,21 +50,6 @@ export class SpeakerEnroller {
       for (let i = 0; i < dim; i++) averaged[i] += emb[i] / this.embeddings.length;
     }
     return averaged;
-  }
-
-  private extractEmbedding(buffer: Buffer): Float32Array {
-    const dim = 256;
-    const embedding = new Float32Array(dim);
-    let rms = 0;
-    for (let i = 0; i < buffer.length; i += 2) {
-      const sample = buffer.readInt16LE(i) / 32768;
-      rms += sample * sample;
-    }
-    rms = Math.sqrt(rms / (buffer.length / 2));
-    for (let i = 0; i < dim; i++) {
-      embedding[i] = Math.sin(rms * (i + 1) * 0.1) * 0.5 + 0.5;
-    }
-    return embedding;
   }
 
   reset(): void {
