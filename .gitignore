@@ -4,3 +4,11 @@ dist/
 dist-electron/
 release/
 *.log
+.env
+.env.*
+*.tsbuildinfo
+Thumbs.db
+.vscode/
+.idea/
+*.local
+coverage/
