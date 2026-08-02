@@ -13,7 +13,7 @@ const DEFAULT_SETTINGS = {
   llmProvider: 'deepseek' as const,
   llmApiKey: '',
   llmModel: 'deepseek-chat',
-  sttProvider: 'groq' as const,  // 'groq' (free) | 'qwen' (async) | 'openai'
+  sttProvider: 'qwen' as const,  // 'qwen' (real-time WS) | 'groq' (free) | 'openai'
   autoStart: false,
   mcpFilesystem: false,
   mcpSqlite: false,

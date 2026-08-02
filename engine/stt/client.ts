@@ -1,4 +1,5 @@
 import type { STTResult } from '../types';
+import WebSocket from 'ws';
 
 export type STTProvider = 'qwen' | 'openai' | 'groq';
 
@@ -14,17 +15,13 @@ const PROVIDER_CONFIGS: Record<STTProvider, { baseUrl: string; defaultModel: str
     baseUrl: 'https://api.openai.com/v1',
     defaultModel: 'whisper-1',
   },
-  // Groq: OpenAI-compatible Whisper API, free tier (no credit card needed)
-  // https://console.groq.com
   groq: {
     baseUrl: 'https://api.groq.com/openai/v1',
     defaultModel: 'whisper-large-v3-turbo',
   },
-  // Qwen Paraformer: async file transcription (submit + poll)
-  // Uses DashScope native API, not compatible-mode
   qwen: {
-    baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
-    defaultModel: 'paraformer-v2',
+    baseUrl: 'wss://dashscope.aliyuncs.com/api-ws/v1/inference',
+    defaultModel: 'paraformer-realtime-v2',
   },
 };
 
@@ -37,18 +34,19 @@ export class STTClient {
   }
 
   async transcribe(audioBuffer: Buffer): Promise<STTResult> {
-    const wavBuffer = STTClient.pcmToWav(audioBuffer);
-
     if (this.config.provider === 'qwen') {
-      return this.transcribeQwenAsync(wavBuffer);
+      // Qwen real-time API accepts raw PCM, not WAV
+      const pcmBuffer = STTClient.wavToPcm(audioBuffer);
+      return this.transcribeQwenRealtime(pcmBuffer);
     }
 
-    // OpenAI / Groq: direct multipart file upload
-    return this.transcribeOpenAI(wavBuffer);
+    // OpenAI / Groq: multipart upload with WAV
+    return this.transcribeOpenAI(audioBuffer);
   }
 
-  /** OpenAI / Groq compatible: direct multipart upload */
-  private async transcribeOpenAI(wavBuffer: Buffer): Promise<STTResult> {
+  /** OpenAI / Groq: HTTP multipart upload */
+  private async transcribeOpenAI(audioBuffer: Buffer): Promise<STTResult> {
+    const wavBuffer = STTClient.pcmToWav(audioBuffer);
     const formData = new FormData();
     const blob = new Blob([new Uint8Array(wavBuffer)], { type: 'audio/wav' });
     formData.append('file', blob, 'audio.wav');
@@ -71,80 +69,157 @@ export class STTClient {
   }
 
   /**
-   * Qwen DashScope Paraformer: async task submission + polling.
-   * Uses `oss://` data URLs — uploads as base64 data URL.
+   * Qwen Paraformer 实时语音识别 (WebSocket).
+   *
+   * Protocol: wss://dashscope.aliyuncs.com/api-ws/v1/inference
+   * 1. Connect WebSocket with Bearer auth
+   * 2. Send run-task header (model, parameters)
+   * 3. Stream raw 16kHz 16-bit mono PCM audio
+   * 4. Send finish-task
+   * 5. Collect result-generated events → text
    */
-  private async transcribeQwenAsync(wavBuffer: Buffer): Promise<STTResult> {
-    // Step 1: Submit async transcription task
-    // Paraformer accepts data URLs or OSS URLs
-    const wavBase64 = wavBuffer.toString('base64');
-    const dataUrl = `data:audio/wav;base64,${wavBase64}`;
+  private transcribeQwenRealtime(pcmBuffer: Buffer): Promise<STTResult> {
+    return new Promise((resolve, reject) => {
+      const taskId = `satsai-${Date.now()}`;
+      const texts: string[] = [];
+      let completed = false;
 
-    const submitUrl = `${this.config.baseUrl}/services/audio/asr/transcription`;
-    const submitResp = await fetch(submitUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.config.apiKey}`,
-        'Content-Type': 'application/json',
-        'X-DashScope-Async': 'enable',
-      },
-      body: JSON.stringify({
-        model: this.config.model,
-        input: { file_urls: [dataUrl] },
-        parameters: {
-          language_hints: this.config.language ? [this.config.language] : undefined,
+      const ws = new WebSocket(this.config.baseUrl, {
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`,
         },
-      }),
-    });
-
-    if (!submitResp.ok) {
-      const errText = await submitResp.text();
-      // If data URL not supported, fall back to OpenAI format
-      if (errText.includes('invalid') || errText.includes('file_urls')) {
-        return this.transcribeOpenAI(wavBuffer);
-      }
-      throw new Error(`Qwen STT submit error (${submitResp.status}): ${errText}`);
-    }
-
-    const task = (await submitResp.json()) as {
-      output?: { task_id?: string; task_status?: string };
-    };
-    const taskId = task.output?.task_id;
-    if (!taskId) {
-      throw new Error(`Qwen STT: no task_id returned`);
-    }
-
-    // Step 2: Poll for completion
-    const pollUrl = `${this.config.baseUrl}/tasks/${taskId}`;
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setTimeout(r, 500));
-      const pollResp = await fetch(pollUrl, {
-        headers: { Authorization: `Bearer ${this.config.apiKey}` },
       });
-      if (!pollResp.ok) continue;
 
-      const pollData = (await pollResp.json()) as {
-        output?: {
-          task_status?: string;
-          results?: Array<{
-            transcription_url?: string;
-            sentences?: Array<{ text: string }>;
-          }>;
-        };
+      const finish = (result: STTResult | Error) => {
+        if (completed) return;
+        completed = true;
+        ws.close();
+        if (result instanceof Error) reject(result);
+        else resolve(result);
       };
 
-      const status = pollData.output?.task_status;
-      if (status === 'SUCCEEDED') {
-        const sentences = pollData.output?.results?.[0]?.sentences;
-        const text = sentences?.map((s) => s.text).join('') || '';
-        return { text, language: 'zh', confidence: 0.95 };
-      }
-      if (status === 'FAILED') {
-        throw new Error('Qwen STT: task failed');
-      }
-    }
+      // Timeout after 30 seconds
+      const timer = setTimeout(() => {
+        finish(new Error('Qwen STT: WebSocket timeout'));
+      }, 30000);
 
-    throw new Error('Qwen STT: polling timeout');
+      ws.on('open', async () => {
+        // Step 1: Send run-task header
+        const runTask = {
+          header: {
+            task_id: taskId,
+            task_group: 'audio',
+            task: 'asr',
+            function: 'recognition',
+            model: this.config.model,
+            action: 'run-task',
+          },
+          payload: {
+            task_group: 'audio',
+            task: 'asr',
+            function: 'recognition',
+            model: this.config.model,
+            input: {},
+            parameters: {
+              format: 'pcm',
+              sample_rate: 16000,
+              ...(this.config.language ? { language_hints: [this.config.language] } : {}),
+            },
+          },
+        };
+        ws.send(JSON.stringify(runTask));
+
+        // Brief delay for server to acknowledge run-task
+        await new Promise((r) => setTimeout(r, 100));
+
+        // Step 2: Stream audio as raw PCM (NOT WAV!)
+        const chunkSize = 3200;
+        let offset = 0;
+        while (offset < pcmBuffer.length) {
+          const chunk = pcmBuffer.subarray(offset, offset + chunkSize);
+          ws.send(chunk);
+          offset += chunkSize;
+        }
+
+        // Step 3: Signal end of audio
+        const finishTask = {
+          header: {
+            task_id: taskId,
+            task_group: 'audio',
+            task: 'asr',
+            function: 'recognition',
+            action: 'finish-task',
+          },
+          payload: {
+            task_group: 'audio',
+            task: 'asr',
+            function: 'recognition',
+            model: this.config.model,
+          },
+        };
+        ws.send(JSON.stringify(finishTask));
+      });
+
+      ws.on('message', (data: WebSocket.Data) => {
+        const raw = data.toString();
+        console.log('[Qwen WS] ←', raw.slice(0, 300));
+        try {
+          const msg = JSON.parse(raw) as {
+            header?: { event?: string };
+            payload?: { output?: { text?: string } };
+          };
+
+          // result-generated event contains transcription text
+          if (msg.header?.event === 'result-generated') {
+            const text = msg.payload?.output?.text;
+            if (text) texts.push(text);
+          }
+
+          // task-finished event means transcription is complete
+          if (msg.header?.event === 'task-finished') {
+            clearTimeout(timer);
+            finish({
+              text: texts.join(''),
+              language: this.config.language || 'zh',
+              confidence: 0.95,
+            });
+          }
+
+          // task-failed
+          if (msg.header?.event === 'task-failed') {
+            clearTimeout(timer);
+            finish(new Error(`Qwen STT: task failed - ${JSON.stringify(msg)}`));
+          }
+        } catch {
+          // Binary frame — ignore (we only sent audio, shouldn't receive binary)
+        }
+      });
+
+      ws.on('error', (err) => {
+        clearTimeout(timer);
+        finish(new Error(`Qwen STT WebSocket error: ${err.message}`));
+      });
+
+      ws.on('close', () => {
+        clearTimeout(timer);
+        if (!completed) {
+          finish(new Error('Qwen STT: WebSocket closed unexpectedly'));
+        }
+      });
+    });
+  }
+
+  /** Extract raw PCM from a WAV buffer (skip 44-byte header) */
+  static wavToPcm(wavBuffer: Buffer): Buffer {
+    // WAV header is 44 bytes; data chunk starts after "data" + 4-byte size
+    if (wavBuffer.length < 44) return wavBuffer;
+    // Find "data" chunk ID at offset 36
+    if (wavBuffer.toString('ascii', 36, 40) === 'data') {
+      const dataOffset = 44;
+      return wavBuffer.subarray(dataOffset);
+    }
+    // Fallback: just strip first 44 bytes
+    return wavBuffer.subarray(44);
   }
 
   static pcmToWav(pcmBuffer: Buffer, sampleRate = 16000): Buffer {
@@ -162,7 +237,7 @@ export class STTClient {
     wavBuffer.write('WAVE', offset); offset += 4;
     wavBuffer.write('fmt ', offset); offset += 4;
     wavBuffer.writeUInt32LE(16, offset); offset += 4;
-    wavBuffer.writeUInt16LE(1, offset); offset += 2; // PCM
+    wavBuffer.writeUInt16LE(1, offset); offset += 2;
     wavBuffer.writeUInt16LE(numChannels, offset); offset += 2;
     wavBuffer.writeUInt32LE(sampleRate, offset); offset += 4;
     wavBuffer.writeUInt32LE(byteRate, offset); offset += 4;
