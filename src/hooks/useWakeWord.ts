@@ -6,24 +6,36 @@ export type WakeWordCallback = (keyword: string, score: number) => void;
 interface UseWakeWordOptions {
   keywords?: string[];
   onDetect: WakeWordCallback;
+  onSpeechStart?: () => void;
+  onSpeechEnd?: () => void;
+  onAudioChunk?: (chunk: Float32Array) => void;
   cooldownMs?: number;
   enabled?: boolean;
 }
 
 /**
- * React hook wrapping OpenWakeWord (free, open-source) for in-browser wake word detection.
- * Runs in the Electron renderer process using ONNX Runtime Web + Web Audio API.
+ * React hook wrapping OpenWakeWord (free, open-source) for browser wake word detection.
+ * Uses ONNX Runtime Web + Web Audio API in the Electron renderer process.
+ *
+ * Exposes speech-start/speech-end from OpenWakeWord's built-in Silero VAD,
+ * allowing the UI/engine to capture audio while the user is speaking.
  */
 export function useWakeWord({
   keywords = ['hey_jarvis'],
   onDetect,
+  onSpeechStart,
+  onSpeechEnd,
+  onAudioChunk,
   cooldownMs = 2000,
   enabled = true,
 }: UseWakeWordOptions) {
   const engineRef = useRef<WakeWordEngine | null>(null);
-  const loadedRef = useRef(false);
   const onDetectRef = useRef(onDetect);
+  const onSpeechStartRef = useRef(onSpeechStart);
+  const onSpeechEndRef = useRef(onSpeechEnd);
   onDetectRef.current = onDetect;
+  onSpeechStartRef.current = onSpeechStart;
+  onSpeechEndRef.current = onSpeechEnd;
 
   useEffect(() => {
     if (!enabled) return;
@@ -32,24 +44,27 @@ export function useWakeWord({
       activeKeywords: keywords,
       cooldownMs,
     });
-
     engineRef.current = engine;
 
     engine.on('detect', ({ keyword, score }) => {
       onDetectRef.current(keyword, score);
     });
 
+    engine.on('speech-start', () => {
+      onSpeechStartRef.current?.();
+    });
+
+    engine.on('speech-end', () => {
+      onSpeechEndRef.current?.();
+    });
+
     engine.on('error', (err) => {
       console.error('[OpenWakeWord] Error:', err);
     });
 
-    // Load models and start listening
-    engine.load()
-      .then(() => {
-        loadedRef.current = true;
-        console.log('[OpenWakeWord] Models loaded, starting...');
-        return engine.start();
-      })
+    engine
+      .load()
+      .then(() => engine.start())
       .then(() => {
         console.log('[OpenWakeWord] Listening for:', keywords.join(', '));
       })
@@ -59,7 +74,6 @@ export function useWakeWord({
 
     return () => {
       engine.stop?.();
-      loadedRef.current = false;
     };
   }, [enabled, keywords.join(','), cooldownMs]);
 

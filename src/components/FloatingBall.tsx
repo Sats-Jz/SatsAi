@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAppStore } from '../stores/appStore';
 import { useDrag } from '../hooks/useDrag';
 import { useWakeWord } from '../hooks/useWakeWord';
@@ -10,11 +10,28 @@ export default function FloatingBall() {
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
   const setEnrollmentOpen = useAppStore((s) => s.setEnrollmentOpen);
   const [showMenu, setShowMenu] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   const { isDragging, position, onMouseDown } = useDrag(
     window.screen.width - 140,
     window.screen.height - 200
   );
+
+  /** Send recorded audio to main process for STT → LLM → TTS */
+  const sendAudioToEngine = async (audioBlob: Blob) => {
+    try {
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      const base64 = btoa(
+        new Uint8Array(arrayBuffer).reduce((d, b) => d + String.fromCharCode(b), '')
+      );
+      if (window.electronAPI) {
+        window.electronAPI.processAudio(base64);
+      }
+    } catch (err) {
+      console.error('[FloatingBall] Audio send error:', err);
+    }
+  };
 
   // Init OpenWakeWord — free, open-source, no API key needed
   useWakeWord({
@@ -25,11 +42,49 @@ export default function FloatingBall() {
         window.electronAPI.wakeWordDetected(keyword, score);
       }
     },
+    onSpeechStart: () => {
+      // Start recording user's voice command via MediaRecorder
+      navigator.mediaDevices
+        .getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } })
+        .then((stream) => {
+          const recorder = new MediaRecorder(stream, {
+            mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+              ? 'audio/webm;codecs=opus'
+              : 'audio/webm',
+          });
+          mediaRecorderRef.current = recorder;
+          audioChunksRef.current = [];
+
+          recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) audioChunksRef.current.push(e.data);
+          };
+
+          recorder.onstop = () => {
+            const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+            sendAudioToEngine(blob);
+            // Release mic
+            stream.getTracks().forEach((t) => t.stop());
+          };
+
+          recorder.start(100); // 100ms chunks
+          console.log('[FloatingBall] Recording started');
+        })
+        .catch((err) => {
+          console.error('[FloatingBall] Mic access failed:', err);
+        });
+    },
+    onSpeechEnd: () => {
+      // Stop recording when user stops speaking
+      if (mediaRecorderRef.current?.state === 'recording') {
+        mediaRecorderRef.current.stop();
+        console.log('[FloatingBall] Recording stopped');
+      }
+    },
     cooldownMs: 2000,
-    enabled: voiceState === 'idle', // Only listen when idle
+    enabled: voiceState === 'idle',
   });
 
-  // Handle tray double-click → trigger listening
+  // Handle tray double-click / manual trigger
   useEffect(() => {
     if (window.electronAPI) {
       window.electronAPI.onStartListening(() => {
@@ -47,9 +102,7 @@ export default function FloatingBall() {
   };
 
   const handleDoubleClick = () => {
-    if (window.electronAPI) {
-      window.electronAPI.wakeWordDetected('manual', 1.0);
-    }
+    window.electronAPI?.wakeWordDetected('manual', 1.0);
   };
 
   const getFaceExpression = (): string => {
@@ -62,11 +115,9 @@ export default function FloatingBall() {
     }
   };
 
-  const getStatusClass = (): string => `ball-${voiceState}`;
-
   return (
     <div
-      className={`floating-ball ${getStatusClass()} ${isDragging ? 'dragging' : ''}`}
+      className={`floating-ball ball-${voiceState} ${isDragging ? 'dragging' : ''}`}
       style={{ left: position.x, top: position.y }}
       onMouseDown={onMouseDown}
       onDoubleClick={handleDoubleClick}
