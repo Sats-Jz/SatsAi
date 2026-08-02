@@ -9,9 +9,10 @@ const RECORD_MS = 8000;
 export default function FloatingBall() {
   const voiceState = useAppStore((s) => s.voiceState);
   const response = useAppStore((s) => s.response);
+  const transcript = useAppStore((s) => s.transcript);
+  const error = useAppStore((s) => s.error);
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
   const setEnrollmentOpen = useAppStore((s) => s.setEnrollmentOpen);
-  const [showMenu, setShowMenu] = useState(false);
   const [recording, setRecording] = useState(false);
   const [countdown, setCountdown] = useState(0);
 
@@ -32,6 +33,7 @@ export default function FloatingBall() {
   const wake = useCallback(async () => {
     if (mrRef.current?.state === 'recording') return;
 
+    // Tell engine
     window.electronAPI?.wakeWordDetected('manual', 1.0);
 
     try {
@@ -56,10 +58,12 @@ export default function FloatingBall() {
         setCountdown(0);
         cleanup();
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-        if (blob.size < 400) return;
+        console.log('[Ball] Recording done, blob size:', blob.size);
+        if (blob.size < 200) return;
         try {
-          const wav = await webmBlobToWavBase64(blob);
-          window.electronAPI?.processAudio(wav);
+          const wavBase64 = await webmBlobToWavBase64(blob);
+          console.log('[Ball] WAV base64 length:', wavBase64.length);
+          window.electronAPI?.processAudio(wavBase64);
         } catch (err) {
           console.error('[Ball] Convert error:', err);
         }
@@ -68,6 +72,7 @@ export default function FloatingBall() {
       mr.start(100);
       setRecording(true);
       setCountdown(Math.ceil(RECORD_MS / 1000));
+      console.log('[Ball] Recording started,', RECORD_MS, 'ms');
 
       timerRef.current = setInterval(() => {
         setCountdown((prev) => {
@@ -91,50 +96,43 @@ export default function FloatingBall() {
   }, [wake]);
 
   // --- visual state ---
-  const isListening = recording || voiceState === 'listening';
-  const isThinking = voiceState === 'thinking' && !recording;
-  const isSpeaking = voiceState === 'speaking';
+  // Ball is ALWAYS visible. State changes affect animation, not visibility.
+  const showMic = recording;
+  const showThinking = voiceState === 'thinking';
+  const showSpeaking = voiceState === 'speaking';
+  const highlight = recording || voiceState === 'listening';
 
-  const face = recording ? '\u{1F3A4}' :
-    isListening ? '\u{1F3A4}' :
-    isThinking ? '\u{1F914}' :
-    isSpeaking ? '\u{1F4AC}' :
-    '\u{1F60A}';
+  const face = recording ? '\u{1F3A4}'
+    : voiceState === 'thinking' ? '\u{1F914}'
+    : voiceState === 'speaking' ? '\u{1F4AC}'
+    : '\u{1F60A}';
 
-  const statusClass = recording ? 'listening' :
-    isListening ? 'listening' :
-    isThinking ? 'thinking' :
-    isSpeaking ? 'speaking' :
-    'idle';
+  const cls = highlight ? 'ball-listening'
+    : voiceState === 'thinking' ? 'ball-thinking'
+    : voiceState === 'speaking' ? 'ball-speaking'
+    : 'ball-idle';
 
   return (
     <div className="ball-wrapper">
+      {/* Speech bubble above ball */}
+      {(response || transcript || error) && (
+        <div className="ball-bubble">
+          {transcript && <div className="bb-transcript">"{transcript}"</div>}
+          {response && <div className="bb-response">{response}</div>}
+          {error && <div className="bb-error">{error}</div>}
+        </div>
+      )}
+
       <div
-        className={`ball-body ball-${statusClass}`}
+        className={`ball-body ${cls}`}
         onDoubleClick={wake}
-        onContextMenu={(e) => { e.preventDefault(); setShowMenu(!showMenu); }}
+        onContextMenu={(e) => { e.preventDefault(); }}
       >
         <div className="ball-face">{face}</div>
         {recording && <div className="countdown-badge">{countdown}s</div>}
-        {isListening && <WaveAnimation />}
-        {isThinking && <div className="thinking-ring" />}
+        {showMic && <WaveAnimation />}
+        {showThinking && <div className="thinking-ring" />}
       </div>
-
-      {showMenu && (
-        <div className="ball-context-menu">
-          <div className="menu-item" onClick={() => { setSettingsOpen(true); setShowMenu(false); }}>Settings</div>
-          <div className="menu-item" onClick={() => { setEnrollmentOpen(true); setShowMenu(false); }}>Voice ID</div>
-          <div className="menu-separator" />
-          <div className="menu-item" onClick={() => setShowMenu(false)}>Exit</div>
-        </div>
-      )}
-
-      {/* DialogBubble inline */}
-      {isSpeaking && response && (
-        <div className="dialog-bubble-inline">
-          <div className="response-text">{response}</div>
-        </div>
-      )}
     </div>
   );
 }
