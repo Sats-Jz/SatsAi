@@ -34,21 +34,12 @@ export default function FloatingBall() {
       const chunks: Blob[] = [];
       mr.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
 
-      mr.onstop = async () => {
+      mr.onstop = () => {
         cleanup(); setRecording(false); setCountdown(0);
         const blob = new Blob(chunks);
         if (blob.size < 200) return;
-
-        // WebM → PCM via Web Audio API. Permissions are pre-granted.
-        const arrayBuf = await blob.arrayBuffer();
-        const ctx = new AudioContext({ sampleRate: 16000 });
-        const audioBuffer = await ctx.decodeAudioData(arrayBuf);
-        ctx.close();
-
-        const channel = audioBuffer.getChannelData(0);
-        const pcm = new Int16Array(channel.length);
-        for (let i = 0; i < channel.length; i++) pcm[i] = Math.round(channel[i] * 32767);
-        window.electronAPI?.processAudio(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength));
+        // Send raw WebM bytes — NO AudioContext. Engine handles conversion.
+        blob.arrayBuffer().then((buf) => window.electronAPI?.processAudio(buf));
       };
 
       mr.start();
