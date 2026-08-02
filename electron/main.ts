@@ -15,11 +15,6 @@ let engine: Engine | null = null;
 const isDev = !app.isPackaged;
 let isQuitting = false;
 
-// Pre-grant microphone — MUST be before any window loads
-session.defaultSession.setPermissionRequestHandler(
-  (_wc, permission, cb) => cb(permission === 'media')
-);
-
 app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 
 function createWindow() {
@@ -34,13 +29,6 @@ function createWindow() {
       contextIsolation: true, nodeIntegration: false,
     },
   });
-
-  // Also grant on this window's session
-  mainWindow.webContents.session.setPermissionRequestHandler(
-    (_wc, permission, cb, details?: { mediaTypes?: string[] }) => {
-      cb(permission === 'media');
-    }
-  );
 
   if (isDev) {
     const devUrl = (process.env as Record<string, string>).VITE_DEV_SERVER_URL || 'http://localhost:5173';
@@ -127,6 +115,11 @@ function setupIPC() {
 }
 
 app.whenReady().then(() => {
+  // MUST be first — before any window loads
+  session.defaultSession.setPermissionRequestHandler(
+    (_wc: Electron.WebContents, permission: string, cb: (granted: boolean) => void) => cb(permission === 'media')
+  );
+
   setupIPC();
   createWindow();
   createTray();
