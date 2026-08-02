@@ -1,20 +1,24 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAppStore } from '../stores/appStore';
 import { useDrag } from '../hooks/useDrag';
 import { webmBlobToWavBase64 } from '../utils/audio';
 import WaveAnimation from './WaveAnimation';
 import './FloatingBall.css';
 
-const RECORD_DURATION_MS = 8000; // Max 8 seconds per command
+const RECORD_MS = 8000;
 
 export default function FloatingBall() {
   const voiceState = useAppStore((s) => s.voiceState);
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
   const setEnrollmentOpen = useAppStore((s) => s.setEnrollmentOpen);
   const [showMenu, setShowMenu] = useState(false);
+  const [recording, setRecording] = useState(false);
   const [countdown, setCountdown] = useState(0);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
+  const voiceRef = useRef(voiceState);
+  voiceRef.current = voiceState;
+
+  const mrRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval>>();
 
@@ -23,22 +27,22 @@ export default function FloatingBall() {
     window.screen.height - 200
   );
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      stopRecording();
-      clearInterval(timerRef.current);
-    };
-  }, []);
-
-  const stopRecording = () => {
+  const cleanup = useCallback(() => {
     clearInterval(timerRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
-    setCountdown(0);
-  };
+    mrRef.current = null;
+  }, []);
 
-  const startRecording = async () => {
+  useEffect(() => cleanup, [cleanup]);
+
+  /** Start mic + notify engine */
+  const wake = useCallback(async () => {
+    if (recording) return;
+
+    // Notify engine
+    window.electronAPI?.wakeWordDetected('manual', 1.0);
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { sampleRate: 16000, channelCount: 1 },
@@ -48,125 +52,91 @@ export default function FloatingBall() {
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
         : 'audio/webm';
-      const recorder = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = recorder;
-      audioChunksRef.current = [];
-      setCountdown(Math.ceil(RECORD_DURATION_MS / 1000));
+      const mr = new MediaRecorder(stream, { mimeType });
+      mrRef.current = mr;
+      chunksRef.current = [];
 
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      mr.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
       };
 
-      recorder.onstop = async () => {
-        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        stopRecording();
-        if (blob.size > 0) {
-          try {
-            const wavBase64 = await webmBlobToWavBase64(blob);
-            window.electronAPI?.processAudio(wavBase64);
-          } catch (err) {
-            console.error('[FloatingBall] Audio conversion failed:', err);
-          }
+      mr.onstop = async () => {
+        setRecording(false);
+        setCountdown(0);
+        cleanup();
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        if (blob.size < 400) return; // too short
+        try {
+          const wav = await webmBlobToWavBase64(blob);
+          window.electronAPI?.processAudio(wav);
+        } catch (err) {
+          console.error('[FloatingBall] Convert error:', err);
         }
       };
 
-      recorder.start(100);
-      console.log('[FloatingBall] Recording...');
+      mr.start(100);
+      setRecording(true);
+      setCountdown(Math.ceil(RECORD_MS / 1000));
 
-      // Auto-stop after RECORD_DURATION_MS
       timerRef.current = setInterval(() => {
-        setCountdown((c) => {
-          if (c <= 1) {
-            if (mediaRecorderRef.current?.state === 'recording') {
-              mediaRecorderRef.current.stop();
-              console.log('[FloatingBall] Auto-stopped recording');
-            }
+        setCountdown((prev) => {
+          if (prev <= 1) {
+            if (mrRef.current?.state === 'recording') mrRef.current.stop();
             return 0;
           }
-          return c - 1;
+          return prev - 1;
         });
       }, 1000);
     } catch (err) {
-      console.error('[FloatingBall] Mic access denied:', err);
-      stopRecording();
+      console.error('[FloatingBall] Mic failed:', err);
+      cleanup();
     }
-  };
-
-  const handleWake = () => {
-    if (voiceState !== 'idle') return;
-
-    // Tell engine we're listening
-    window.electronAPI?.wakeWordDetected('manual', 1.0);
-    // Start recording mic
-    startRecording();
-  };
+  }, [recording, cleanup]);
 
   // Tray "wake" → start recording
   useEffect(() => {
-    window.electronAPI?.onStartListening(() => {
-      handleWake();
-    });
-    return () => {
-      window.electronAPI?.removeAllListeners('start-listening');
-    };
-  }, [voiceState]);
+    window.electronAPI?.onStartListening(() => wake());
+    return () => window.electronAPI?.removeAllListeners('start-listening');
+  }, [wake]);
 
-  const handleDoubleClick = () => {
-    handleWake();
-  };
+  // --- visual state ---
+  const isListening = recording || voiceState === 'listening';
+  const isThinking = voiceState === 'thinking' && !recording;
+  const isSpeaking = voiceState === 'speaking';
 
-  const handleContextMenu = (e: React.MouseEvent) => {
-    e.preventDefault();
-    setShowMenu(!showMenu);
-  };
+  const face = recording ? '\u{1F3A4}' :
+    isListening ? '\u{1F3A4}' :
+    isThinking ? '\u{1F914}' :
+    isSpeaking ? '\u{1F4AC}' :
+    '\u{1F60A}';
 
-  const getFaceExpression = (): string => {
-    if (countdown > 0) return '\u{1F3A4}';
-    switch (voiceState) {
-      case 'idle': return '\u{1F60A}';
-      case 'listening': return '\u{1F3A4}';
-      case 'thinking': return '\u{1F914}';
-      case 'speaking': return '\u{1F4AC}';
-      default: return '\u{1F60A}';
-    }
-  };
-
-  const getStatusClass = (): string => {
-    if (countdown > 0) return 'ball-listening';
-    return `ball-${voiceState}`;
-  };
+  const statusClass = recording ? 'ball-listening' :
+    isListening ? 'ball-listening' :
+    isThinking ? 'ball-thinking' :
+    isSpeaking ? 'ball-speaking' :
+    'ball-idle';
 
   return (
     <div
-      className={`floating-ball ${getStatusClass()} ${isDragging ? 'dragging' : ''}`}
+      className={`floating-ball ${statusClass} ${isDragging ? 'dragging' : ''}`}
       style={{ left: position.x, top: position.y }}
       onMouseDown={onMouseDown}
-      onDoubleClick={handleDoubleClick}
-      onContextMenu={handleContextMenu}
+      onDoubleClick={wake}
+      onContextMenu={(e) => { e.preventDefault(); setShowMenu(!showMenu); }}
     >
       <div className="ball-body">
-        <div className="ball-face">
-          <span className="face-expression">{getFaceExpression()}</span>
-        </div>
-        {countdown > 0 && (
-          <div className="countdown-badge">{countdown}s</div>
-        )}
-        {(voiceState === 'listening' || countdown > 0) && <WaveAnimation />}
-        {voiceState === 'thinking' && <div className="thinking-ring" />}
+        <div className="ball-face">{face}</div>
+        {recording && <div className="countdown-badge">{countdown}s</div>}
+        {isListening && <WaveAnimation />}
+        {isThinking && <div className="thinking-ring" />}
       </div>
 
       {showMenu && (
         <div className="ball-context-menu">
-          <div className="menu-item" onClick={() => { setSettingsOpen(true); setShowMenu(false); }}>
-            Settings
-          </div>
-          <div className="menu-item" onClick={() => { setEnrollmentOpen(true); setShowMenu(false); }}>
-            Voice ID
-          </div>
+          <div className="menu-item" onClick={() => { setSettingsOpen(true); setShowMenu(false); }}>Settings</div>
+          <div className="menu-item" onClick={() => { setEnrollmentOpen(true); setShowMenu(false); }}>Voice ID</div>
           <div className="menu-separator" />
-          <div className="menu-item" onClick={() => setShowMenu(false)}>
-            Exit
-          </div>
+          <div className="menu-item" onClick={() => setShowMenu(false)}>Exit</div>
         </div>
       )}
     </div>
