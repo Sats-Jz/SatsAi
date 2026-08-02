@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAppStore } from '../stores/appStore';
-import { webmBlobToWavBase64 } from '../utils/audio';
 import WaveAnimation from './WaveAnimation';
 import './FloatingBall.css';
 
@@ -11,13 +10,10 @@ export default function FloatingBall() {
   const response = useAppStore((s) => s.response);
   const transcript = useAppStore((s) => s.transcript);
   const error = useAppStore((s) => s.error);
-  const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
-  const setEnrollmentOpen = useAppStore((s) => s.setEnrollmentOpen);
   const [recording, setRecording] = useState(false);
   const [countdown, setCountdown] = useState(0);
 
   const mrRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval>>();
 
@@ -32,8 +28,6 @@ export default function FloatingBall() {
 
   const wake = useCallback(async () => {
     if (mrRef.current?.state === 'recording') return;
-
-    // Tell engine
     window.electronAPI?.wakeWordDetected('manual', 1.0);
 
     try {
@@ -42,79 +36,59 @@ export default function FloatingBall() {
       });
       streamRef.current = stream;
 
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : 'audio/webm';
-      const mr = new MediaRecorder(stream, { mimeType });
+      const mr = new MediaRecorder(stream, {
+        mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+          ? 'audio/webm;codecs=opus' : 'audio/webm',
+      });
       mrRef.current = mr;
-      chunksRef.current = [];
 
-      mr.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
+      const chunks: Blob[] = [];
+      mr.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
 
-      mr.onstop = async () => {
+      mr.onstop = () => {
         setRecording(false);
         setCountdown(0);
         cleanup();
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-        console.log('[Ball] Recording done, blob size:', blob.size);
+        const blob = new Blob(chunks, { type: 'audio/webm' });
         if (blob.size < 200) return;
-        try {
-          const wavBase64 = await webmBlobToWavBase64(blob);
-          console.log('[Ball] WAV base64 length:', wavBase64.length);
-          window.electronAPI?.processAudio(wavBase64);
-        } catch (err) {
-          console.error('[Ball] Convert error:', err);
-        }
+        // Read raw bytes — NO decode, NO Web Audio API, NO string loop
+        const reader = new FileReader();
+        reader.onload = () => {
+          window.electronAPI?.processAudio(reader.result as ArrayBuffer);
+        };
+        reader.readAsArrayBuffer(blob);
       };
 
-      mr.start(100);
+      mr.start();
       setRecording(true);
       setCountdown(Math.ceil(RECORD_MS / 1000));
-      console.log('[Ball] Recording started,', RECORD_MS, 'ms');
 
       timerRef.current = setInterval(() => {
         setCountdown((prev) => {
-          if (prev <= 1) {
-            if (mrRef.current?.state === 'recording') mrRef.current.stop();
-            return 0;
-          }
+          if (prev <= 1) { mrRef.current?.stop(); return 0; }
           return prev - 1;
         });
       }, 1000);
-    } catch (err) {
-      console.error('[Ball] Mic failed:', err);
-      cleanup();
-    }
+    } catch (err) { console.error('[Ball] Mic failed:', err); cleanup(); }
   }, [cleanup]);
 
-  // Tray wake
   useEffect(() => {
     window.electronAPI?.onStartListening(() => wake());
     return () => window.electronAPI?.removeAllListeners('start-listening');
   }, [wake]);
-
-  // --- visual state ---
-  // Ball is ALWAYS visible. State changes affect animation, not visibility.
-  const showMic = recording;
-  const showThinking = voiceState === 'thinking';
-  const showSpeaking = voiceState === 'speaking';
-  const highlight = recording || voiceState === 'listening';
 
   const face = recording ? '\u{1F3A4}'
     : voiceState === 'thinking' ? '\u{1F914}'
     : voiceState === 'speaking' ? '\u{1F4AC}'
     : '\u{1F60A}';
 
-  const cls = highlight ? 'ball-listening'
+  const cls = recording || voiceState === 'listening' ? 'ball-listening'
     : voiceState === 'thinking' ? 'ball-thinking'
     : voiceState === 'speaking' ? 'ball-speaking'
     : 'ball-idle';
 
   return (
     <div className="ball-wrapper">
-      {/* Speech bubble above ball */}
       {(response || transcript || error) && (
         <div className="ball-bubble">
           {transcript && <div className="bb-transcript">"{transcript}"</div>}
@@ -122,16 +96,11 @@ export default function FloatingBall() {
           {error && <div className="bb-error">{error}</div>}
         </div>
       )}
-
-      <div
-        className={`ball-body ${cls}`}
-        onDoubleClick={wake}
-        onContextMenu={(e) => { e.preventDefault(); }}
-      >
+      <div className={`ball-body ${cls}`} onDoubleClick={wake}>
         <div className="ball-face">{face}</div>
         {recording && <div className="countdown-badge">{countdown}s</div>}
-        {showMic && <WaveAnimation />}
-        {showThinking && <div className="thinking-ring" />}
+        {(recording || voiceState === 'listening') && <WaveAnimation />}
+        {voiceState === 'thinking' && <div className="thinking-ring" />}
       </div>
     </div>
   );

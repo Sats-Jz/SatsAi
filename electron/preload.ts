@@ -12,7 +12,7 @@ export interface ElectronAPI {
   /** Notify main process that wake word was detected (from OpenWakeWord) */
   wakeWordDetected: (keyword: string, score: number) => void;
   /** Send recorded audio (base64) from renderer to main process for STT pipeline */
-  processAudio: (audioBase64: string) => void;
+  processAudio: (audioBuf: ArrayBuffer) => void;
   onEngineEvent: (callback: (event: unknown) => void) => void;
   onTTSAudio: (callback: (audioBuffer: ArrayBuffer) => void) => void;
   onStartListening: (callback: () => void) => void;
@@ -30,8 +30,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   wakeWordDetected: (keyword: string, score: number) => {
     ipcRenderer.send('wake-word-detected', keyword, score);
   },
-  processAudio: (audioBase64: string) => {
-    ipcRenderer.send('process-audio', audioBase64);
+  processAudio: (audioBuf: ArrayBuffer) => {
+    ipcRenderer.send('process-audio', audioBuf);
   },
   onEngineEvent: (cb: (event: unknown) => void) => {
     ipcRenderer.on('engine-event', (_e, data) => cb(data));

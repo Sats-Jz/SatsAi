@@ -119,8 +119,8 @@ function setupIPC() {
   });
 
   // Audio from renderer (recorded via MediaRecorder after wake word)
-  ipcMain.on('process-audio', async (_event, audioBase64: string) => {
-    await engine?.processAudio(audioBase64);
+  ipcMain.on('process-audio', async (_event, audioBuf: ArrayBuffer) => {
+    await engine?.processAudio(audioBuf);
   });
 
   ipcMain.handle('get-status', () => {

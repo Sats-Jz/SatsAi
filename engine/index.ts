@@ -81,13 +81,13 @@ export class Engine extends EventEmitter {
     this.setState('listening');
   }
 
-  /** Process recorded audio — full pipeline */
-  async processAudio(wavBase64: string): Promise<void> {
+  /** Process recorded audio — full pipeline. Receives raw WebM bytes. */
+  async processAudio(rawBuffer: Buffer | ArrayBuffer): Promise<void> {
     if (this.busy) { console.log('[Engine] Busy, ignoring'); return; }
     this.busy = true;
 
     try {
-      const wav = Buffer.from(wavBase64, 'base64');
+      const wav = Buffer.isBuffer(rawBuffer) ? rawBuffer : Buffer.from(rawBuffer);
       console.log('[Engine] Audio received:', wav.length, 'bytes');
       if (wav.length < 500) {
         this[emit]('error', { message: '语音太短' });
