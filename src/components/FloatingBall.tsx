@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useAppStore } from '../stores/appStore';
 import { useDrag } from '../hooks/useDrag';
 import { useWakeWord } from '../hooks/useWakeWord';
+import { webmBlobToWavBase64 } from '../utils/audio';
 import WaveAnimation from './WaveAnimation';
 import './FloatingBall.css';
 
@@ -21,13 +22,9 @@ export default function FloatingBall() {
   /** Send recorded audio to main process for STT → LLM → TTS */
   const sendAudioToEngine = async (audioBlob: Blob) => {
     try {
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const base64 = btoa(
-        new Uint8Array(arrayBuffer).reduce((d, b) => d + String.fromCharCode(b), '')
-      );
-      if (window.electronAPI) {
-        window.electronAPI.processAudio(base64);
-      }
+      // Convert WebM/Opus → WAV PCM (16kHz mono) via Web Audio API
+      const wavBase64 = await webmBlobToWavBase64(audioBlob);
+      window.electronAPI?.processAudio(wavBase64);
     } catch (err) {
       console.error('[FloatingBall] Audio send error:', err);
     }

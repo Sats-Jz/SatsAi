@@ -77,17 +77,17 @@ export class Engine extends EventEmitter {
   }
 
   /**
-   * Process recorded audio from the renderer (MediaRecorder).
-   * The renderer already did wake word + VAD; we just need STT → LLM → TTS.
+   * Process recorded audio from the renderer.
+   * Audio is already WAV PCM (16kHz mono), base64-encoded.
+   * The renderer did wake word + VAD + WebM→WAV conversion.
    */
-  async processAudio(audioBase64: string): Promise<void> {
-    const audioBuffer = Buffer.from(audioBase64, 'base64');
+  async processAudio(wavBase64: string): Promise<void> {
+    const audioBuffer = Buffer.from(wavBase64, 'base64');
     await this.handleSpeechEnd(audioBuffer);
   }
 
-  private async handleSpeechEnd(audioBuffer: Buffer): Promise<void> {
-    // Reject audio that's too short
-    if (audioBuffer.length < 400) {
+  private async handleSpeechEnd(wavBuffer: Buffer): Promise<void> {
+    if (wavBuffer.length < 1000) {
       this.stateMachine.onError('语音太短');
       return;
     }
@@ -108,12 +108,11 @@ export class Engine extends EventEmitter {
       } as EngineEvent);
     }
 
-    this.stateMachine.onSpeechEnd(audioBuffer);
+    this.stateMachine.onSpeechEnd(wavBuffer);
 
     try {
-      // STT: Convert to proper format and transcribe
-      const wav = this.convertToWav(audioBuffer);
-      const sttResult = await this.sttClient.transcribe(wav);
+      // STT: audio is already WAV PCM 16kHz mono from renderer
+      const sttResult = await this.sttClient.transcribe(wavBuffer);
       this.emit('engine-event', {
         type: 'transcript',
         text: sttResult.text,
@@ -152,13 +151,6 @@ export class Engine extends EventEmitter {
       console.error('Pipeline error:', err);
       this.stateMachine.onError(`处理出错: ${(err as Error).message}`);
     }
-  }
-
-  /** Simple webm-to-WAV transcoding. Full PCM conversion needs ffmpeg; this is a best-effort. */
-  private convertToWav(buffer: Buffer): Buffer {
-    // If the renderer sent webm/opus, STTClient will handle conversion.
-    // For now pass through and let STT client deal with it.
-    return buffer;
   }
 
   async start(): Promise<void> {
