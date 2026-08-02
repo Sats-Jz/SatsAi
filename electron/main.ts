@@ -50,7 +50,7 @@ function createTray() {
   tray = new Tray(icon.resize({ width: 16, height: 16 }));
 
   const contextMenu = Menu.buildFromTemplate([
-    { label: '唤醒助手', click: () => mainWindow?.webContents.send('hotword-triggered') },
+    { label: '唤醒助手', click: () => mainWindow?.webContents.send('start-listening') },
     { type: 'separator' },
     { label: '设置', click: () => mainWindow?.webContents.send('open-settings') },
     { type: 'separator' },
@@ -61,7 +61,7 @@ function createTray() {
   tray.setContextMenu(contextMenu);
   tray.on('double-click', () => {
     mainWindow?.show();
-    mainWindow?.webContents.send('hotword-triggered');
+    mainWindow?.webContents.send('start-listening');
   });
 }
 
@@ -74,7 +74,6 @@ function initEngine() {
     sttProvider: (process.env.SATSAI_STT_PROVIDER as 'qwen' | 'openai') || 'qwen',
     llmProvider: (process.env.SATSAI_LLM_PROVIDER as 'deepseek' | 'openai' | 'qwen' | 'claude') || 'deepseek',
     llmApiKey: process.env.SATSAI_LLM_API_KEY || '',
-    hotwordModelDir: path.join(__dirname, '../resources/models'),
   });
 
   engine.on('engine-event', (event: EngineEvent) => {
@@ -89,6 +88,12 @@ function initEngine() {
 }
 
 function setupIPC() {
+  // Wake word detected by OpenWakeWord in renderer → trigger engine
+  ipcMain.on('wake-word-detected', (_event, keyword: string, score: number) => {
+    console.log(`[Main] Wake word: "${keyword}" (score: ${score.toFixed(2)})`);
+    engine?.triggerListening();
+  });
+
   ipcMain.handle('get-status', () => {
     return { state: engine?.getState() || 'idle' };
   });

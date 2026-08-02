@@ -9,8 +9,12 @@ export interface ElectronAPI {
   submitEnrollmentAudio: (phraseIndex: number, audioBase64: string) => Promise<{
     success: boolean; progress?: number; complete?: boolean;
   }>;
+  /** Notify main process that wake word was detected */
+  wakeWordDetected: (keyword: string, score: number) => void;
   onEngineEvent: (callback: (event: unknown) => void) => void;
   onTTSAudio: (callback: (audioBuffer: ArrayBuffer) => void) => void;
+  /** Main process tells renderer to start listening */
+  onStartListening: (callback: () => void) => void;
   removeAllListeners: (channel: string) => void;
 }
 
@@ -22,11 +26,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startEnrollment: () => ipcRenderer.invoke('start-enrollment'),
   submitEnrollmentAudio: (phraseIndex: number, audioBase64: string) =>
     ipcRenderer.invoke('submit-enrollment-audio', phraseIndex, audioBase64),
+  wakeWordDetected: (keyword: string, score: number) => {
+    ipcRenderer.send('wake-word-detected', keyword, score);
+  },
   onEngineEvent: (callback: (event: unknown) => void) => {
     ipcRenderer.on('engine-event', (_event, data) => callback(data));
   },
   onTTSAudio: (callback: (audioBuffer: ArrayBuffer) => void) => {
     ipcRenderer.on('tts-audio', (_event, buffer) => callback(buffer));
+  },
+  onStartListening: (callback: () => void) => {
+    ipcRenderer.on('start-listening', () => callback());
   },
   removeAllListeners: (channel: string) => {
     ipcRenderer.removeAllListeners(channel);

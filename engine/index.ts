@@ -2,7 +2,6 @@ import { EventEmitter } from 'events';
 import { DialogStateMachine } from './dialog/stateMachine';
 import { AudioCapture } from './audio';
 import { VADDetector } from './vad/silero';
-import { HotwordDetector } from './hotword/porcupine';
 import { SpeakerEnroller } from './speaker/enroll';
 import { SpeakerVerifier } from './speaker/verify';
 import { STTClient } from './stt/client';
@@ -23,14 +22,12 @@ export interface EngineConfig {
   sttProvider: 'qwen' | 'openai';
   llmProvider: 'deepseek' | 'openai' | 'qwen' | 'claude';
   llmApiKey: string;
-  hotwordModelDir: string;
 }
 
 export class Engine extends EventEmitter {
   private stateMachine: DialogStateMachine;
   private audioCapture: AudioCapture;
   private vad: VADDetector;
-  private hotword: HotwordDetector;
   private speakerEnroller: SpeakerEnroller;
   private speakerVerifier: SpeakerVerifier;
   private sttClient: STTClient;
@@ -38,16 +35,14 @@ export class Engine extends EventEmitter {
   private llmClient: LLMClient;
   private actionRegistry: ActionRegistry;
   private store: AppStore;
-  private config: EngineConfig;
   private currentAudioChunks: Buffer[] = [];
   private conversationHistory: Array<{ role: string; content: string }> = [];
 
   constructor(config: EngineConfig) {
     super();
-    this.config = config;
+    const settings = new AppStore(config.dataDir).getSettings();
 
     this.store = new AppStore(config.dataDir);
-    const settings = this.store.getSettings();
 
     this.stateMachine = new DialogStateMachine((event: EngineEvent) => {
       this.emit('engine-event', event);
@@ -60,13 +55,6 @@ export class Engine extends EventEmitter {
       silenceThreshold: 0.3,
       silenceDurationMs: 800,
       speechDurationMs: 200,
-    });
-
-    this.hotword = new HotwordDetector({
-      accessKey: '',
-      modelPath: config.hotwordModelDir + '/porcupine_params.pv',
-      keywordPaths: [config.hotwordModelDir + '/hey-sats_win.ppn'],
-      sensitivities: [settings.hotwordSensitivity],
     });
 
     this.speakerEnroller = new SpeakerEnroller();
@@ -87,14 +75,8 @@ export class Engine extends EventEmitter {
       { provider: config.llmProvider, apiKey: config.llmApiKey },
       this.actionRegistry
     );
-  }
 
-  async start(): Promise<void> {
-    this.audioCapture.on('data', (chunk: Buffer) => {
-      this.currentAudioChunks.push(chunk);
-      this.vad.process(chunk);
-    });
-
+    // Wire up VAD events
     this.vad.on('speech-start', () => {
       this.currentAudioChunks = [];
     });
@@ -103,13 +85,43 @@ export class Engine extends EventEmitter {
       const audioBuffer = Buffer.concat(this.currentAudioChunks);
       await this.handleSpeechEnd(audioBuffer);
     });
+  }
+
+  /**
+   * Triggered by renderer when OpenWakeWord detects the hotword.
+   * Starts audio capture and enters listening state.
+   */
+  triggerListening(): void {
+    if (this.stateMachine.getState() !== 'idle') return;
+    this.stateMachine.onHotwordDetected();
+    this.audioCapture.start();
+  }
+
+  async start(): Promise<void> {
+    this.audioCapture.on('data', (chunk: Buffer) => {
+      if (this.stateMachine.getState() === 'listening') {
+        this.currentAudioChunks.push(chunk);
+      }
+    });
+
+    // Audio runs passively; only feeds VAD while listening
+    this.audioCapture.on('data', (chunk: Buffer) => {
+      if (this.stateMachine.getState() === 'listening') {
+        this.vad.process(chunk);
+      }
+    });
 
     this.audioCapture.start();
-    this.hotword.start();
-    console.log('[Engine] Started');
+    console.log('[Engine] Started (wake word detection in renderer)');
   }
 
   private async handleSpeechEnd(audioBuffer: Buffer): Promise<void> {
+    if (audioBuffer.length < 1600) {
+      // Too short — ignore
+      this.stateMachine.onError('语音太短');
+      return;
+    }
+
     // Verify speaker
     const enrolled = this.store.getSpeakerEmbedding();
     if (enrolled) {
@@ -132,7 +144,9 @@ export class Engine extends EventEmitter {
       const tools = buildLLMTools(this.actionRegistry);
       this.conversationHistory.push({ role: 'user', content: result.text });
 
-      const llmResponse = await this.llmClient.chat(result.text, tools, this.conversationHistory.slice(-10));
+      const llmResponse = await this.llmClient.chat(
+        result.text, tools, this.conversationHistory.slice(-10)
+      );
 
       // Execute tool calls
       for (const tc of llmResponse.toolCalls) {
@@ -149,6 +163,7 @@ export class Engine extends EventEmitter {
         this.emit('tts-audio', audioResponse);
       } catch (ttsErr) {
         console.error('TTS error:', ttsErr);
+        this.stateMachine.onError('TTS 合成失败');
       }
     } catch (err) {
       console.error('Pipeline error:', err);
@@ -158,7 +173,6 @@ export class Engine extends EventEmitter {
 
   stop(): void {
     this.audioCapture.stop();
-    this.hotword.stop();
     this.store.close();
   }
 

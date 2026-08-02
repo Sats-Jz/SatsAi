@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAppStore } from '../stores/appStore';
 import { useDrag } from '../hooks/useDrag';
+import { useWakeWord } from '../hooks/useWakeWord';
 import WaveAnimation from './WaveAnimation';
 import './FloatingBall.css';
 
@@ -15,13 +16,40 @@ export default function FloatingBall() {
     window.screen.height - 200
   );
 
+  // Init OpenWakeWord — free, open-source, no API key needed
+  useWakeWord({
+    keywords: ['hey_jarvis'],
+    onDetect: (keyword, score) => {
+      console.log(`[WakeWord] Detected: "${keyword}" score=${score.toFixed(2)}`);
+      if (window.electronAPI) {
+        window.electronAPI.wakeWordDetected(keyword, score);
+      }
+    },
+    cooldownMs: 2000,
+    enabled: voiceState === 'idle', // Only listen when idle
+  });
+
+  // Handle tray double-click → trigger listening
+  useEffect(() => {
+    if (window.electronAPI) {
+      window.electronAPI.onStartListening(() => {
+        window.electronAPI.wakeWordDetected('manual', 1.0);
+      });
+    }
+    return () => {
+      window.electronAPI?.removeAllListeners('start-listening');
+    };
+  }, []);
+
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     setShowMenu(!showMenu);
   };
 
   const handleDoubleClick = () => {
-    window.electronAPI?.getStatus();
+    if (window.electronAPI) {
+      window.electronAPI.wakeWordDetected('manual', 1.0);
+    }
   };
 
   const getFaceExpression = (): string => {
@@ -34,9 +62,7 @@ export default function FloatingBall() {
     }
   };
 
-  const getStatusClass = (): string => {
-    return `ball-${voiceState}`;
-  };
+  const getStatusClass = (): string => `ball-${voiceState}`;
 
   return (
     <div
