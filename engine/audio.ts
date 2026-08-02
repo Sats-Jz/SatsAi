@@ -1,18 +1,25 @@
 /**
  * WebM/Opus → raw 16-bit PCM (16kHz mono).
- * Uses ffmpeg-static (bundled binary, no system install needed).
+ * Uses ffmpeg-static — copies binary to temp dir to avoid EBUSY lock.
  */
 import { execFile } from 'child_process';
-import { writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
+import { writeFileSync, readFileSync, unlinkSync, mkdirSync, copyFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-let ffmpegPath: string;
+let ffmpegExe: string;
 
 export async function webmToPcm(webmBuffer: Buffer): Promise<Buffer> {
-  if (!ffmpegPath) {
-    ffmpegPath = require('ffmpeg-static') as string;
-    console.log('[Audio] ffmpeg:', ffmpegPath);
+  if (!ffmpegExe) {
+    const bundled = require('ffmpeg-static') as string;
+    // Copy to temp to avoid EBUSY (Electron locks node_modules files)
+    const tmpDir = join(tmpdir(), 'satsai');
+    mkdirSync(tmpDir, { recursive: true });
+    ffmpegExe = join(tmpDir, 'ffmpeg.exe');
+    if (!existsSync(ffmpegExe)) {
+      copyFileSync(bundled, ffmpegExe);
+    }
+    console.log('[Audio] ffmpeg:', ffmpegExe);
   }
 
   return new Promise((resolve, reject) => {
@@ -23,7 +30,7 @@ export async function webmToPcm(webmBuffer: Buffer): Promise<Buffer> {
 
     writeFileSync(inFile, webmBuffer);
 
-    execFile(ffmpegPath, [
+    execFile(ffmpegExe, [
       '-y', '-i', inFile,
       '-acodec', 'pcm_s16le',
       '-ar', '16000',
@@ -35,17 +42,16 @@ export async function webmToPcm(webmBuffer: Buffer): Promise<Buffer> {
 
       if (err) {
         try { unlinkSync(outFile); } catch {}
-        reject(new Error(`ffmpeg conversion failed: ${err.message}`));
+        reject(new Error(`ffmpeg: ${err.message}`));
         return;
       }
 
       try {
         const wav = readFileSync(outFile);
         unlinkSync(outFile);
-        // Strip 44-byte WAV header → raw PCM
-        resolve(wav.subarray(44));
+        resolve(wav.subarray(44)); // strip WAV header → raw PCM
       } catch (e) {
-        reject(new Error(`Failed to read converted WAV: ${(e as Error).message}`));
+        reject(new Error(`WAV read: ${(e as Error).message}`));
       }
     });
   });
