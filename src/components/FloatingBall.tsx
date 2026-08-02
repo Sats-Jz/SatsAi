@@ -44,7 +44,7 @@ export default function FloatingBall() {
 
       mr.start();
       setRecording(true);
-      setCountdown(8);
+      setCountdown(10);
       timerRef.current = setInterval(() => setCountdown((p) => (p <= 1 ? (mrRef.current?.stop(), 0) : p - 1)), 1000);
     } catch (e) { console.error('[Ball]', e); cleanup(); setRecording(false); }
   }, [cleanup]);

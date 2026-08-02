@@ -92,10 +92,24 @@ export class Engine extends EventEmitter {
       console.log('[Engine] WebM:', webm.length, 'bytes');
       if (webm.length < 500) { this[emit]('error', { message: '语音太短' }); this.setState('idle'); return; }
 
-      // Decode WebM/Opus → PCM in main process (pure JS, prism-media + opusscript)
+      // Decode WebM/Opus → PCM
       const pcm = await webmToPcm(webm);
-      console.log('[Engine] PCM:', pcm.length, 'bytes');
-      if (pcm.length < 500) { this[emit]('error', { message: '语音太短' }); this.setState('idle'); return; }
+      console.log('[Engine] PCM:', pcm.length, 'bytes, first 20 samples:',
+        Array.from(pcm.slice(0, 20)).map(b => b.toString(16).padStart(2,'0')).join(' '));
+
+      // Check for actual signal (not all zeros)
+      let signalEnergy = 0;
+      for (let i = 0; i < pcm.length; i += 2) {
+        const s = pcm.readInt16LE(i) / 32768;
+        signalEnergy += s * s;
+      }
+      signalEnergy = Math.sqrt(signalEnergy / (pcm.length / 2));
+      console.log('[Engine] Signal RMS:', signalEnergy.toFixed(4));
+
+      if (pcm.length < 500 || signalEnergy < 0.001) {
+        this[emit]('error', { message: '没有检测到声音' });
+        this.setState('idle'); this.busy = false; return;
+      }
 
       await this.runPipeline(pcm);
     } catch (err) {
@@ -110,10 +124,13 @@ export class Engine extends EventEmitter {
     try {
       this.setState('thinking');
 
-      console.log('[Engine] → STT...');
+      console.log('[Engine] → STT ' + pcm.length + ' bytes...');
       const stt = await this.sttClient.transcribe(pcm);
-      console.log('[Engine] STT:', stt.text);
-      if (!stt.text.trim()) { this[emit]('error', { message: '没有识别到语音' }); return; }
+      console.log('[Engine] STT:', JSON.stringify(stt));
+      if (!stt.text.trim()) {
+        this[emit]('error', { message: '听不清，请再说一次' });
+        this.setState('idle'); this.busy = false; return;
+      }
       this[emit]('transcript', { text: stt.text });
 
       console.log('[Engine] → LLM...');
