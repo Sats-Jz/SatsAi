@@ -19,7 +19,7 @@ import type { EngineEvent, DialogState } from './types';
 export interface EngineConfig {
   dataDir: string;
   sttApiKey: string;
-  sttProvider: 'qwen' | 'openai';
+  sttProvider: 'qwen' | 'openai' | 'groq';
   llmProvider: 'deepseek' | 'openai' | 'qwen' | 'claude';
   llmApiKey: string;
 }
